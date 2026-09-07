@@ -1,0 +1,13 @@
+# Third-party packages imported by backend/. Pinned loosely: the project has
+# no lockfile yet, and none of these are used near their API edges.
+
+# agents/ -- LangGraph state machines and their Postgres access
+langgraph
+psycopg2-binary
+
+# ingestion -- BSE and company-website document fetcher
+requests>=2.31
+
+# api -- HTTP layer over ingestion (api/app.py)
+fastapi
+uvicorn
