@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# BSE scrip list cache written by ingestion/sources/scrip_master.py
+.ingestion-cache/
