@@ -9,7 +9,14 @@ every run leaves an audit row, not just successful ones.
 Upserts on run_id (see db.upsert.save_orchestrator_run), so a run that
 paused for human review and was later resumed updates the same row rather
 than creating a second one.
+
+Best-effort, like every other database call in this codebase (see e.g.
+fetch_fundamentals_data.py, load_user_memory.py): this is an audit log,
+not something the caller's response depends on, so a database hiccup here
+must not crash an otherwise-successful run.
 """
+
+import psycopg2
 
 from db.upsert import save_orchestrator_run
 
@@ -35,5 +42,8 @@ def persist_run(state):
         "reviewer_decision": state.get("reviewer_decision"),
         "review_notes": state.get("review_notes"),
     }
-    save_orchestrator_run(record)
+    try:
+        save_orchestrator_run(record)
+    except psycopg2.Error:
+        pass
     return {}

@@ -14,7 +14,13 @@ Not yet wired into this package's own (not-yet-implemented) base graph --
 see this package's __init__.py -- but is wired into
 agents/orchestrator/graph.py via that package's own
 nodes/update_user_memory.py adapter.
+
+Best-effort, like load_user_memory.py's own read: a database hiccup while
+saving memory must not crash an otherwise-successful turn -- the user
+just doesn't get remembered this time.
 """
+
+import psycopg2
 
 from db.upsert import save_user_memory
 
@@ -42,5 +48,8 @@ def update_user_memory(state):
     preferences.update(memory_update.get("preferences") or {})
 
     updated_memory = {"watchlist": watchlist, "preferences": preferences}
-    save_user_memory(user_id, updated_memory)
+    try:
+        save_user_memory(user_id, updated_memory)
+    except psycopg2.Error:
+        pass
     return {"updated_memory": updated_memory}

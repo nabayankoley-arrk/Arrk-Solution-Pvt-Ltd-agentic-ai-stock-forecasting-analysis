@@ -10,7 +10,14 @@ persist, so it skips this node entirely.
 Everything needed is already merged into `final_output` by
 build_success_response, so this reads from there rather than the raw
 per-signal state fields.
+
+Best-effort, like every other database call in this codebase (see e.g.
+fetch_fundamentals_data.py): the caller already has the completed analysis
+regardless of whether this cache write succeeds, so a database hiccup here
+must not crash an otherwise-successful run.
 """
+
+import psycopg2
 
 from db.upsert import save_fundamental_analysis_results
 
@@ -39,5 +46,8 @@ def persist_results(state):
         "composite_confidence": composite.get("confidence"),
         "risk_flags": composite.get("risk_flags") or [],
     }
-    save_fundamental_analysis_results(record)
+    try:
+        save_fundamental_analysis_results(record)
+    except psycopg2.Error:
+        pass
     return {}

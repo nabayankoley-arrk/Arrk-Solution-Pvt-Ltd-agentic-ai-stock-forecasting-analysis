@@ -30,3 +30,20 @@ class UserMemoryFields(TypedDict, total=False):
     memory_update: Optional[dict]  # e.g. {"preferences": {"default_horizon": "3m"}}; set by parse_and_route
     resolved_ticker: Optional[str]  # owned by the base subgraph; read by update_user_memory
     updated_memory: Optional[dict]  # set by update_user_memory
+
+
+class ChatIntentRoutingState(UserMemoryFields, total=False):
+    """State for graph.py's bridge graph (load_user_memory ->
+    invoke_orchestrator -> update_user_memory). Not part of the
+    specification -- see graph.py's docstring on why this bridge exists
+    and what it stands in for.
+    """
+
+    # --- input, passed straight through to the Orchestrator Subgraph ---
+    ticker: Optional[str]
+    horizon: Optional[str]
+    forecast_days: Optional[int]
+
+    # --- invoke_orchestrator ---
+    final_response: Optional[dict]
+    error_response: Optional[dict]
