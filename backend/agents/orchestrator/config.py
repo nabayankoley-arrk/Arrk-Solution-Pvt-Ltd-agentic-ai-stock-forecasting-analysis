@@ -78,12 +78,28 @@ OLLAMA_TIMEOUT_SECONDS = _env_int("OLLAMA_TIMEOUT_SECONDS", 120)
 
 OPENROUTER_BASE_URL = _env_str("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")  # required only when LLM_PROVIDER=openrouter
-OPENROUTER_MODEL = _env_str("OPENROUTER_MODEL", "amazon/nova-2-lite-v1")
+# google/gemma-4-31b-it:free -- OpenRouter's free-tier slug for "Google:
+# Gemma 4 31B (free)", per explicit direction to use that model with a
+# fallback to Ollama (see LLM_PROVIDER_FALLBACK_ENABLED below) rather than
+# a paid model.
+OPENROUTER_MODEL = _env_str("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
 OPENROUTER_TIMEOUT_SECONDS = _env_int("OPENROUTER_TIMEOUT_SECONDS", 60)
 
 # OpenRouter is the hard default; set LLM_PROVIDER=ollama in the environment
-# to opt into the local/offline fallback path instead.
+# to make Ollama the primary provider instead (LLM_PROVIDER_FALLBACK_ENABLED
+# below still applies in either direction).
 LLM_PROVIDER = _env_str("LLM_PROVIDER", "openrouter")
+
+# When True (default), call_llm_chat() automatically retries against the
+# *other* provider (Ollama <-> OpenRouter) if LLM_PROVIDER's own call
+# raises -- e.g. OpenRouter's free-tier daily rate limit, or a paid model
+# with no credits -- before giving up. This is a distinct, cheaper-to-hit
+# safety net from LLM_FALLBACK_ENABLED below: that one is the *last*
+# resort (a deterministic non-LLM rule) reached only once *both*
+# providers have failed. Set to False to fail over to the deterministic
+# fallback immediately on the primary provider's first error, without
+# trying the secondary provider at all.
+LLM_PROVIDER_FALLBACK_ENABLED = _env_bool("LLM_PROVIDER_FALLBACK_ENABLED", True)
 
 LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", 0.1)  # low: structured routing decision, not creative writing
 

@@ -1,32 +1,26 @@
-"""Chat Intent & Routing subgraph -- User Memory extension ONLY.
+"""Chat Intent & Routing Subgraph, plus its User Memory extension.
 
-STATUS: this package does not implement the Chat Intent & Routing
-subgraph itself -- no specification for that base subgraph (its own
-nodes, state, edges, and the conversation_sessions table it reads/writes)
-has been shared yet. It implements only the two nodes the "User Memory —
-Specification (Chat Intent & Routing Subgraph Extension)" document adds
-on top of that base: load_user_memory and update_user_memory, against the
-already-created "Memory".user_memory table.
+Implements both specification documents this package is built from:
+  - "Chat Intent & Routing Subgraph — Specification" (parse_and_route as
+    the sole decision-maker; execute_tool_call, build_clarification_response,
+    build_out_of_scope_response, format_conversational_reply,
+    update_session_context, build_final_response as the deterministic
+    steps around it; see graph.py).
+  - "User Memory — Specification (Chat Intent & Routing Subgraph
+    Extension)" (load_user_memory / update_user_memory; see config.py's
+    MAX_WATCHLIST_SIZE/MEMORY_ENABLED and nodes/load_user_memory.py,
+    nodes/update_user_memory.py).
 
-Each node follows the same (state) -> partial-state-update contract every
-node in this codebase uses (see e.g. agents/orchestrator/nodes/), so
-wiring them into the real base subgraph later is an add_node/add_edge
-away, per the extension spec's own edges:
+See graph.py's own module docstring for the one deviation from both
+documents (load_conversation_context) and why it exists, and
+smoke_test.py for a runnable multi-turn walkthrough (analysis,
+clarification, out-of-scope, and session continuity across separate
+graph.invoke() calls).
 
-    START -> load_user_memory -> parse_and_route
-    ...
-    update_session_context -> update_user_memory -> build_final_response
-
-There is no graph.py here (yet) -- a StateGraph needs a base subgraph to
-attach these two nodes to, which doesn't exist in this repo. See
-nodes/load_user_memory.py and nodes/update_user_memory.py directly, or
-smoke_test.py for a standalone (no base graph) exercise of both.
-
-In the meantime, agents/orchestrator/graph.py wires both nodes in
-directly (via its own nodes/load_user_memory.py and
-nodes/update_user_memory.py thin adapters) so the Orchestrator Subgraph
-gets memory-informed ticker resolution and watchlist/preference
-persistence without waiting on the base subgraph above. That wiring is
-meant to move onto the real Chat Intent & Routing subgraph once it
-exists, not stay on the orchestrator permanently.
+agents/orchestrator/graph.py also wires load_user_memory/update_user_memory
+in directly (via its own nodes/load_user_memory.py, nodes/update_user_memory.py
+thin adapters over this package's shared implementation), so the
+Orchestrator Subgraph can still be exercised standalone with
+memory-informed ticker resolution -- not because the Orchestrator is
+supposed to own this behavior long-term.
 """

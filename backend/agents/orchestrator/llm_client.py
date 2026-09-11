@@ -89,19 +89,53 @@ def get_decision(context):
         return _fallback_decision(context, reason=f"LLM Agent unavailable ({exc}); used deterministic fallback")
 
 
+_OTHER_PROVIDER = {"openrouter": "ollama", "ollama": "openrouter"}
+
+
 def call_llm_chat(system_prompt, user_prompt, timeout=None):
     """Shared chat call -- any caller's system/user prompt pair, routed to
-    whichever provider config.LLM_PROVIDER selects. Raises requests' usual
-    exceptions on a network error or non-2xx response (or ValueError if
-    LLM_PROVIDER is neither "ollama" nor "openrouter"); callers decide how
-    to handle that (get_decision falls back to a deterministic rule, see
-    module docstring).
+    whichever provider config.LLM_PROVIDER selects.
+
+    When config.LLM_PROVIDER_FALLBACK_ENABLED is True (the default), a
+    failure on the primary provider (network error, non-2xx response --
+    e.g. OpenRouter's free-tier daily rate limit, or a paid model with no
+    credits) is not raised immediately: this automatically retries once
+    against the *other* provider before giving up, so a temporary outage
+    or quota exhaustion on one provider doesn't take down every LLM-driven
+    capability in the project. Set LLM_PROVIDER_FALLBACK_ENABLED = False
+    to disable this and raise on the primary provider's first failure,
+    same as before this existed.
+
+    Still raises (requests' usual exceptions, or a combined LLMAgentError
+    naming both providers' failures if fallback was attempted) when no
+    provider could serve the request -- callers decide how to handle that
+    (get_decision/get_routing_decision fall back to a deterministic rule;
+    see each module's own docstring). Raises ValueError if LLM_PROVIDER is
+    neither "ollama" nor "openrouter".
     """
-    if config.LLM_PROVIDER == "openrouter":
+    primary = config.LLM_PROVIDER
+    if primary not in _OTHER_PROVIDER:
+        raise ValueError(f"unknown LLM_PROVIDER: {primary!r}")
+
+    try:
+        return _call_provider(primary, system_prompt, user_prompt, timeout)
+    except Exception as primary_exc:
+        if not config.LLM_PROVIDER_FALLBACK_ENABLED:
+            raise
+        secondary = _OTHER_PROVIDER[primary]
+        try:
+            return _call_provider(secondary, system_prompt, user_prompt, timeout)
+        except Exception as secondary_exc:
+            raise LLMAgentError(
+                f"primary provider {primary!r} failed ({primary_exc}); "
+                f"fallback provider {secondary!r} also failed ({secondary_exc})"
+            ) from secondary_exc
+
+
+def _call_provider(provider, system_prompt, user_prompt, timeout):
+    if provider == "openrouter":
         return _call_openrouter_chat(system_prompt, user_prompt, timeout or config.OPENROUTER_TIMEOUT_SECONDS)
-    if config.LLM_PROVIDER == "ollama":
-        return _call_ollama_chat(system_prompt, user_prompt, timeout or config.OLLAMA_TIMEOUT_SECONDS)
-    raise ValueError(f"unknown LLM_PROVIDER: {config.LLM_PROVIDER!r}")
+    return _call_ollama_chat(system_prompt, user_prompt, timeout or config.OLLAMA_TIMEOUT_SECONDS)
 
 
 def _call_ollama_chat(system_prompt, user_prompt, timeout):
