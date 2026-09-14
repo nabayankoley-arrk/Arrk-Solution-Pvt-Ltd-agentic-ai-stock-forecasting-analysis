@@ -1,32 +1,31 @@
-"""Chat Intent & Routing subgraph -- User Memory extension ONLY.
+"""Chat Intent & Routing subgraph.
 
-STATUS: this package does not implement the Chat Intent & Routing
-subgraph itself -- no specification for that base subgraph (its own
-nodes, state, edges, and the conversation_sessions table it reads/writes)
-has been shared yet. It implements only the two nodes the "User Memory —
-Specification (Chat Intent & Routing Subgraph Extension)" document adds
-on top of that base: load_user_memory and update_user_memory, against the
-already-created "Memory".user_memory table.
+Single entry point for an incoming user query: this is the subgraph a
+caller invokes directly, never the Orchestrator Subgraph
+(agents/orchestrator) -- see graph.py's docstring for the node order.
+Stock/market queries are routed on to the Orchestrator Subgraph; every
+other intent gets a fixed refusal (nodes/handle_out_of_scope.py) -- this
+application answers stock/market questions only, so no other topic is
+ever answered. All memory is loaded and
+persisted entirely at this layer -- the Orchestrator Subgraph no longer
+has any memory fields or nodes of its own. Two distinct stores, both under
+the "Memory" schema:
 
-Each node follows the same (state) -> partial-state-update contract every
-node in this codebase uses (see e.g. agents/orchestrator/nodes/), so
-wiring them into the real base subgraph later is an add_node/add_edge
-away, per the extension spec's own edges:
+    "Memory".user_memory          -- one row per user (watchlist,
+                                      preferences), read/written by
+                                      nodes/load_user_memory.py and
+                                      nodes/update_user_memory.py
+    "Memory".conversation_history -- one row per turn (message + response,
+                                      append-only), read/written by
+                                      nodes/load_conversation_history.py
+                                      and nodes/persist_conversation_turn.py
 
-    START -> load_user_memory -> parse_and_route
-    ...
-    update_session_context -> update_user_memory -> build_final_response
+STATUS: parse_and_route (nodes/parse_and_route.py) is a minimal
+placeholder -- no specification for real intent classification has been
+shared yet, so it only distinguishes 'stock_market' from 'out_of_scope'
+via a resolved ticker or a keyword match (config.STOCK_KEYWORDS). Swap it
+for a real classifier without changing any other node's contract.
 
-There is no graph.py here (yet) -- a StateGraph needs a base subgraph to
-attach these two nodes to, which doesn't exist in this repo. See
-nodes/load_user_memory.py and nodes/update_user_memory.py directly, or
-smoke_test.py for a standalone (no base graph) exercise of both.
-
-In the meantime, agents/orchestrator/graph.py wires both nodes in
-directly (via its own nodes/load_user_memory.py and
-nodes/update_user_memory.py thin adapters) so the Orchestrator Subgraph
-gets memory-informed ticker resolution and watchlist/preference
-persistence without waiting on the base subgraph above. That wiring is
-meant to move onto the real Chat Intent & Routing subgraph once it
-exists, not stay on the orchestrator permanently.
+See graph.py for the compiled StateGraph, or smoke_test.py for a
+standalone exercise of a full run through it.
 """

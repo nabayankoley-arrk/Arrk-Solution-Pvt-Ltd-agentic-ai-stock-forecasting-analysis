@@ -87,25 +87,17 @@ def _stream(stream_input, thread_config):
     return graph.get_state(thread_config).values
 
 
-def run_and_trace(ticker, horizon="medium_term", forecast_days=None, user_id=None):
+def run_and_trace(ticker, horizon="medium_term", forecast_days=None):
     """Same run as run_and_approve (auto-approves any human-review pause),
     but prints every node's output as it executes instead of only the
     final result -- use this to see exactly which path a run took: which
     pillars ran, whether reconcile_and_decide finalized straight away or
     looped through execute_tool_call first, and whether it paused for
-    human review.
-
-    user_id is optional (see state.py's note on the User Memory extension
-    fields) -- pass it to exercise load_user_memory/update_user_memory
-    against a real "Memory".user_memory row; omitted, memory is skipped
-    entirely and behavior is unchanged from before that extension was
-    wired in."""
+    human review."""
     thread_config = _thread_config()
     request = {"ticker": ticker, "horizon": horizon}
     if forecast_days is not None:
         request["forecast_days"] = forecast_days
-    if user_id is not None:
-        request["user_id"] = user_id
 
     print(f"=== {ticker}: tracing orchestrator run ===\n")
     state = _stream(request, thread_config)
@@ -132,7 +124,7 @@ def run_invalid_input():
     print()
 
 
-def run_and_approve(ticker, horizon="medium_term", forecast_days=None, user_id=None):
+def run_and_approve(ticker, horizon="medium_term", forecast_days=None):
     """Runs to completion; if the LLM Agent (or the deterministic
     fallback) flags requires_review, simulates a reviewer approving the
     response as-is.
@@ -140,17 +132,11 @@ def run_and_approve(ticker, horizon="medium_term", forecast_days=None, user_id=N
     forecast_days is optional (see state.py's note on that field) -- pass
     it to also get final_response["price_forecast"] from
     forecast_price_range.py; omit it to skip that extra LLM call.
-
-    user_id is optional -- pass it to exercise the User Memory extension
-    (load_user_memory/update_user_memory); omitted, memory is skipped
-    entirely.
     """
     thread_config = _thread_config()
     request = {"ticker": ticker, "horizon": horizon}
     if forecast_days is not None:
         request["forecast_days"] = forecast_days
-    if user_id is not None:
-        request["user_id"] = user_id
     result = graph.invoke(request, config=thread_config)
 
     interrupt_payload = _pending_interrupt(thread_config)
@@ -168,17 +154,13 @@ def run_and_approve(ticker, horizon="medium_term", forecast_days=None, user_id=N
     print()
 
 
-def run_and_request_rerun(ticker, horizon="medium_term", user_id=None):
+def run_and_request_rerun(ticker, horizon="medium_term"):
     """Same as run_and_approve, but if paused for review, simulates a
     reviewer requesting one more Technical Analysis rerun instead of
     approving -- exercises the request_human_review -> execute_tool_call
-    -> reconcile_and_decide loop-back edge.
-
-    user_id is optional -- see run_and_approve's docstring."""
+    -> reconcile_and_decide loop-back edge."""
     thread_config = _thread_config()
     request = {"ticker": ticker, "horizon": horizon}
-    if user_id is not None:
-        request["user_id"] = user_id
     result = graph.invoke(request, config=thread_config)
 
     if _pending_interrupt(thread_config) is None:
@@ -204,5 +186,5 @@ def run_and_request_rerun(ticker, horizon="medium_term", user_id=None):
 
 if __name__ == "__main__":
     run_invalid_input()
-    run_and_approve("", forecast_days=30, user_id="")
+    run_and_approve("TCS.NS", forecast_days=30)
 
