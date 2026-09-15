@@ -24,22 +24,15 @@ def _merge_dicts(current, update):
 
 class OrchestratorState(TypedDict, total=False):
     # --- input ---
-    ticker: Optional[str]  # required unless resolvable from user_memory's watchlist -- see validate_input.py
+    ticker: Optional[str]  # required -- see validate_input.py
     horizon: Optional[str]  # defaulted by validate_input
 
-    # --- User Memory extension (agents/chat_intent_routing) ---
-    # Not part of the lead's original Orchestrator Subgraph specification --
-    # wired in from the "User Memory — Specification (Chat Intent & Routing
-    # Subgraph Extension)" document so the orchestrator can be used stand-
-    # alone (without the not-yet-implemented Chat Intent & Routing base
-    # subgraph) while still getting memory-informed ticker resolution and
-    # watchlist/preference persistence. See nodes/load_user_memory.py and
-    # nodes/update_user_memory.py -- both thin adapters over
-    # agents.chat_intent_routing.nodes' shared implementation.
-    user_id: Optional[str]  # caller-supplied; memory is skipped entirely when omitted
-    user_memory: Optional[dict]  # {"watchlist": [...], "preferences": {...}}; set by load_user_memory
-    memory_update: Optional[dict]  # optional caller-supplied preferences to merge, e.g. {"preferences": {...}}
-    updated_memory: Optional[dict]  # set by update_user_memory after persisting
+    # User memory (watchlist-informed ticker resolution, preference
+    # persistence) is no longer this subgraph's concern -- it moved to
+    # agents/chat_intent_routing, the base subgraph these fields and the
+    # load_user_memory/update_user_memory nodes used to be temporarily
+    # wired into here (see git history). This subgraph now only ever sees
+    # an already-resolved ticker.
 
     # forecast_days: optional, caller-supplied (e.g.
     # {"ticker": ..., "horizon": "medium_term", "forecast_days": 30}). Not

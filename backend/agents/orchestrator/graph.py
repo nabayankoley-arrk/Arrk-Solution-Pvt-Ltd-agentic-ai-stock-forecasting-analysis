@@ -1,14 +1,14 @@
 """Assembles the Orchestrator Subgraph's state graph.
 
-    load_user_memory -> validate_input
+    START -> validate_input
        |- invalid -> build_error_response -> persist_run -> END
        `- valid   -> fetch_technical_analysis    -\\
                      fetch_fundamental_analysis   -+-> reconcile_and_decide
                      fetch_sentiment_analysis     -/        |
                                                              |- call_tool -----------------------> execute_tool_call -> reconcile_and_decide
-                                                             |- finalize, requires_review=False --> build_final_response -> update_user_memory -> persist_run -> END
+                                                             |- finalize, requires_review=False --> build_final_response -> persist_run -> END
                                                              `- finalize, requires_review=True ---> request_human_review
-                                                                                                        |- approve/edit -> build_final_response -> update_user_memory -> persist_run -> END
+                                                                                                        |- approve/edit -> build_final_response -> persist_run -> END
                                                                                                         `- rerun --------> execute_tool_call -> reconcile_and_decide
 
 The three baseline fetch nodes execute independently and are joined by
@@ -22,14 +22,13 @@ ML price-forecast model (ml/predict.py) is kept as a standalone module
 under backend/ml/, decoupled from the orchestrator so it can be wired back
 in later without reworking this graph.
 
-load_user_memory and update_user_memory are thin adapters (see
-nodes/load_user_memory.py, nodes/update_user_memory.py) over the User
-Memory extension's shared implementation in agents/chat_intent_routing --
-wired directly into this graph since the Chat Intent & Routing base
-subgraph they were originally specified against isn't implemented in this
-repo yet. Both no-op gracefully (empty memory / no persistence) when the
-caller omits user_id, so existing callers that don't pass it see no
-behavior change at all.
+This subgraph no longer owns any user-memory concern (no load_user_memory/
+update_user_memory nodes, no user_id/user_memory fields) -- that moved to
+agents/chat_intent_routing, the base Chat Intent & Routing subgraph, which
+now resolves the ticker (including any watchlist fallback) before ever
+calling into this graph, and owns watchlist/preference persistence
+afterwards. See agents/chat_intent_routing/nodes/route_to_orchestrator.py
+for the caller side of that split.
 
 An optional forecast_days input (see state.py's note on that field) rides
 alongside ticker/horizon without adding a graph node: build_final_response
@@ -57,11 +56,9 @@ from .nodes.execute_tool_call import execute_tool_call
 from .nodes.fetch_fundamental_analysis import fetch_fundamental_analysis
 from .nodes.fetch_sentiment_analysis import fetch_sentiment_analysis
 from .nodes.fetch_technical_analysis import fetch_technical_analysis
-from .nodes.load_user_memory import load_user_memory
 from .nodes.persist_run import persist_run
 from .nodes.reconcile_and_decide import reconcile_and_decide
 from .nodes.request_human_review import request_human_review
-from .nodes.update_user_memory import update_user_memory
 from .nodes.validate_input import validate_input
 from .state import OrchestratorState
 
@@ -89,7 +86,6 @@ def route_after_review(state: OrchestratorState) -> str:
 def build_graph(checkpointer=None):
     graph = StateGraph(OrchestratorState)
 
-    graph.add_node("load_user_memory", load_user_memory)
     graph.add_node("validate_input", validate_input)
     graph.add_node("build_error_response", build_error_response)
     graph.add_node("fetch_technical_analysis", fetch_technical_analysis)
@@ -99,11 +95,9 @@ def build_graph(checkpointer=None):
     graph.add_node("execute_tool_call", execute_tool_call)
     graph.add_node("request_human_review", request_human_review)
     graph.add_node("build_final_response", build_final_response)
-    graph.add_node("update_user_memory", update_user_memory)
     graph.add_node("persist_run", persist_run)
 
-    graph.add_edge(START, "load_user_memory")
-    graph.add_edge("load_user_memory", "validate_input")
+    graph.add_edge(START, "validate_input")
     graph.add_conditional_edges(
         "validate_input", route_after_validate, BASELINE_ANALYSIS_NODES + ["build_error_response"]
     )
@@ -121,8 +115,7 @@ def build_graph(checkpointer=None):
         "request_human_review", route_after_review, ["execute_tool_call", "build_final_response"]
     )
 
-    graph.add_edge("build_final_response", "update_user_memory")
-    graph.add_edge("update_user_memory", "persist_run")
+    graph.add_edge("build_final_response", "persist_run")
     graph.add_edge("build_error_response", "persist_run")
     graph.add_edge("persist_run", END)
 
