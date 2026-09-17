@@ -6,14 +6,11 @@ omitted. Invalid requests are routed to build_error_response by
 graph.py's route_after_validate; this node only decides is_valid/
 validation_error, it doesn't build the error payload itself.
 
-When the caller didn't supply a ticker, falls back to the most recent
-entry in user_memory["watchlist"] (set by load_user_memory, which runs
-before this node -- see graph.py) before giving up -- the User Memory
-extension's "Memory-Informed Routing" behavior, ported over from the
-not-yet-implemented Chat Intent & Routing base subgraph's parse_and_route.
-Absent a resolved ticker either way, this is still a validation error.
-The resolved ticker is written back into state so every downstream node
-(and update_user_memory's watchlist update) sees the same value.
+Ticker resolution (falling back to a caller's watchlist when none is
+supplied) is no longer this node's job -- that's now
+agents/chat_intent_routing/nodes/parse_and_route.py's responsibility, run
+before this subgraph is ever invoked. This node just requires a ticker to
+already be present.
 
 Also resolves horizon into each pillar subgraph's own request shape
 (lookback_days for Technical, ratio_basis/lookback_years for
@@ -39,9 +36,6 @@ def validate_input(state):
     run_id = str(uuid.uuid4())
 
     ticker = state.get("ticker")
-    if not ticker or not isinstance(ticker, str):
-        watchlist = (state.get("user_memory") or {}).get("watchlist") or []
-        ticker = watchlist[0] if watchlist else None
     if not ticker or not isinstance(ticker, str):
         return {"run_id": run_id, "is_valid": False, "validation_error": "ticker is required and must be a string"}
 

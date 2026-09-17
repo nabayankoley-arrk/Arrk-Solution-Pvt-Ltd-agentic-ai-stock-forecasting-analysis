@@ -1,1 +1,1 @@
-"""Node implementations for the User Memory extension."""
+"""Node implementations for the Chat Intent & Routing subgraph."""

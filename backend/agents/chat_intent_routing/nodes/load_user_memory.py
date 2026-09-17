@@ -7,12 +7,11 @@ clarification (see the specification's "Memory-Informed Routing" core
 component). Returns an empty memory object -- not an error -- both when
 no row exists yet for this user (a first-time user is a normal case, not
 a failure) and when config.MEMORY_ENABLED is False, so parse_and_route
-never has to branch on whether the extension is active.
+never has to branch on whether memory is active.
 
-Not yet wired into this package's own (not-yet-implemented) base graph --
-see this package's __init__.py -- but is wired into
-agents/orchestrator/graph.py via that package's own
-nodes/load_user_memory.py adapter.
+Wired into this package's own graph.py as the first node after START. The
+Orchestrator Subgraph (agents/orchestrator) no longer has a node like this
+of its own -- see that package's graph.py for the split.
 """
 
 import psycopg2

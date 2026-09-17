@@ -5,16 +5,22 @@ moved to the front of the watchlist (de-duplicated, capped at
 MAX_WATCHLIST_SIZE -- oldest dropped when exceeded, per the
 specification), and any preference `memory_update` supplies (e.g. a
 stated default horizon) is merged into the user's existing preferences.
-Per the specification's Edges section, this only runs after a normal
-completed response -- routing clarification/out-of-scope turns around
-this node entirely is the base subgraph's responsibility, not enforced
-here.
+No-ops on its own (watchlist unchanged) when resolved_ticker is None, so
+graph.py runs this node unconditionally on every turn -- see that
+module's docstring for why that's fine even on the out_of_scope path.
 
-Not yet wired into this package's own (not-yet-implemented) base graph --
-see this package's __init__.py -- but is wired into
-agents/orchestrator/graph.py via that package's own
-nodes/update_user_memory.py adapter.
+A save failure here is logged and swallowed rather than raised: by the
+time this node runs, `response` has already been computed (see
+route_to_orchestrator.py/handle_out_of_scope.py) -- a transient memory-
+store hiccup shouldn't cost the caller the answer they're actually
+waiting for.
+
+Wired into this package's own graph.py as the last node before END. The
+Orchestrator Subgraph (agents/orchestrator) no longer has a node like this
+of its own -- see that package's graph.py for the split.
 """
+
+import psycopg2
 
 from db.upsert import save_user_memory
 
@@ -42,5 +48,8 @@ def update_user_memory(state):
     preferences.update(memory_update.get("preferences") or {})
 
     updated_memory = {"watchlist": watchlist, "preferences": preferences}
-    save_user_memory(user_id, updated_memory)
+    try:
+        save_user_memory(user_id, updated_memory)
+    except psycopg2.Error as exc:
+        print(f"update_user_memory: failed to persist watchlist/preferences for user_id={user_id}: {exc}")
     return {"updated_memory": updated_memory}
