@@ -213,6 +213,40 @@ def append_conversation_message(session_id, role, content):
         )
 
 
+def save_conversation_turn(record):
+    """Appends one row to "Memory".conversation_history -- the storage
+    agents/chat_intent_routing/nodes/persist_conversation_turn.py needs
+    (and agents/chat_intent_routing/nodes/load_conversation_history.py
+    reads back, ordered by created_at per user_id). That subgraph is
+    Sourabh Shetti's implementation; this function only supplies the
+    database-layer dependency it already expects by name -- it does not
+    change anything under agents/chat_intent_routing itself. See
+    db/schema.sql for the table this writes to.
+
+    record: {"turn_id", "user_id", "thread_id", "message", "intent",
+    "resolved_ticker", "response"} -- exactly the dict
+    persist_conversation_turn.py already builds.
+    """
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO "Memory".conversation_history (
+                turn_id, user_id, thread_id, message, intent, resolved_ticker, response
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                record.get("turn_id"),
+                record.get("user_id"),
+                record.get("thread_id"),
+                record.get("message"),
+                record.get("intent"),
+                record.get("resolved_ticker"),
+                Json(record.get("response")),
+            ),
+        )
+
+
 def save_user_memory(user_id, memory):
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute(

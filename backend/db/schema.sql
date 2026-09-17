@@ -213,3 +213,25 @@ CREATE TABLE IF NOT EXISTS "Memory".user_memory (
     preferences  JSONB,
     updated_at   TIMESTAMP DEFAULT NOW()
 );
+
+-- ============================================================================
+-- "Memory".conversation_history -- append-only per-user turn log. Needed by
+-- agents/chat_intent_routing/nodes/persist_conversation_turn.py (writes) and
+-- nodes/load_conversation_history.py (reads, ordered by created_at per
+-- user_id) -- Sourabh Shetti's implementation of the Chat Intent & Routing
+-- subgraph. Inferred from those two node files, which are the only code
+-- that reads/writes it; not from any specification document shared with
+-- this repo.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS "Memory".conversation_history (
+    turn_id          UUID PRIMARY KEY,
+    user_id          VARCHAR(64) NOT NULL,
+    thread_id        VARCHAR(64),
+    message          TEXT,
+    intent           VARCHAR(20),
+    resolved_ticker  VARCHAR(20),
+    response         JSONB,
+    created_at       TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_history_user_created
+    ON "Memory".conversation_history (user_id, created_at DESC);
