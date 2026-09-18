@@ -8,6 +8,8 @@ the environment, falling back to this implementation's own default when
 unset.
 """
 
+import bootstrap  # noqa: F401  -- .env + OS trust store; must precede env reads
+
 import os
 
 

@@ -58,15 +58,69 @@ def save_fundamental_analysis_results(record):
 
 
 def save_technical_analysis_results(record):
-    """No caller currently -- backend/agents/technical_analysis/nodes/
-    persist_results.py is a no-op (see that file's docstring: Technical
-    Analysis has no database-backed persistence yet, only live yfinance
-    fetches). Kept as a no-op here too so wiring it back in later doesn't
-    require adding a table this repo has no confirmed schema for -- the
-    real Technical Analysis Subgraph specification's own Database Schema
-    section has not been shared with this repo.
+    """Upserts "Technical".technical_analysis_results on
+    (ticker, analysis_date), so re-running a ticker on the same day
+    refreshes that day's row instead of failing on the primary key --
+    same convention as save_fundamental_analysis_results above.
+
+    Called by backend/agents/technical_analysis/nodes/persist_results.py,
+    which builds exactly the keys read below. This was previously a stub
+    returning None: that node has always called it with a fully populated
+    record, so every technical analysis run silently discarded its own
+    results. See db/schema.sql for the table.
     """
-    return None
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO "Technical".technical_analysis_results (
+                ticker, analysis_date, trend, momentum, volatility,
+                support_level, resistance_level, overall_direction, confidence_score,
+                candlestick_pattern, pattern_direction, volume_confirmed, trend_aligned,
+                entry_price, stop_loss, target_price, risk_reward_ratio, trade_status,
+                technical_summary
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (ticker, analysis_date) DO UPDATE SET
+                trend = EXCLUDED.trend,
+                momentum = EXCLUDED.momentum,
+                volatility = EXCLUDED.volatility,
+                support_level = EXCLUDED.support_level,
+                resistance_level = EXCLUDED.resistance_level,
+                overall_direction = EXCLUDED.overall_direction,
+                confidence_score = EXCLUDED.confidence_score,
+                candlestick_pattern = EXCLUDED.candlestick_pattern,
+                pattern_direction = EXCLUDED.pattern_direction,
+                volume_confirmed = EXCLUDED.volume_confirmed,
+                trend_aligned = EXCLUDED.trend_aligned,
+                entry_price = EXCLUDED.entry_price,
+                stop_loss = EXCLUDED.stop_loss,
+                target_price = EXCLUDED.target_price,
+                risk_reward_ratio = EXCLUDED.risk_reward_ratio,
+                trade_status = EXCLUDED.trade_status,
+                technical_summary = EXCLUDED.technical_summary
+            """,
+            (
+                record.get("ticker"),
+                record.get("analysis_date"),
+                record.get("trend"),
+                record.get("momentum"),
+                record.get("volatility"),
+                record.get("support_level"),
+                record.get("resistance_level"),
+                record.get("overall_direction"),
+                record.get("confidence_score"),
+                record.get("candlestick_pattern"),
+                record.get("pattern_direction"),
+                record.get("volume_confirmed"),
+                record.get("trend_aligned"),
+                record.get("entry_price"),
+                record.get("stop_loss"),
+                record.get("target_price"),
+                record.get("risk_reward_ratio"),
+                record.get("trade_status"),
+                Json(record.get("technical_summary")),
+            ),
+        )
 
 
 def save_price_history(ticker, rows):
