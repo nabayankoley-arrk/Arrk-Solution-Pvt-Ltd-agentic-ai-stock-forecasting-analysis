@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agentic AI Stock Analysis — Chat</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --border: #e2e4e8;
+    --text: #1b1f24;
+    --muted: #6b7280;
+    --user-bubble: #2563eb;
+    --user-text: #ffffff;
+    --assistant-bubble: #eef0f3;
+    --assistant-text: #1b1f24;
+    --accent: #2563eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171a;
+      --panel: #1d2024;
+      --border: #2c2f34;
+      --text: #e7e9ec;
+      --muted: #9aa0a6;
+      --assistant-bubble: #2a2d32;
+      --assistant-text: #e7e9ec;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 16px;
+    min-height: 100vh;
+  }
+  #app {
+    width: 100%;
+    max-width: 720px;
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 32px);
+  }
+  header {
+    padding: 12px 4px 16px;
+  }
+  header h1 {
+    font-size: 1.1rem;
+    margin: 0 0 4px;
+  }
+  header p {
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  #session-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+  #session-row code {
+    background: var(--assistant-bubble);
+    padding: 2px 6px;
+    border-radius: 4px;
+    word-break: break-all;
+  }
+  #new-session-btn {
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #new-session-btn:hover { border-color: var(--accent); }
+
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .msg {
+    max-width: 80%;
+    padding: 10px 14px;
+    border-radius: 14px;
+    font-size: 0.92rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .msg.user {
+    align-self: flex-end;
+    background: var(--user-bubble);
+    color: var(--user-text);
+    border-bottom-right-radius: 4px;
+  }
+  .msg.assistant {
+    align-self: flex-start;
+    background: var(--assistant-bubble);
+    color: var(--assistant-text);
+    border-bottom-left-radius: 4px;
+  }
+  .msg.system {
+    align-self: center;
+    background: transparent;
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-style: italic;
+  }
+  .meta {
+    display: block;
+    margin-top: 6px;
+    font-size: 0.7rem;
+    opacity: 0.7;
+  }
+  #composer {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  #composer input {
+    flex: 1;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    font-size: 0.95rem;
+  }
+  #composer input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+  }
+  #composer button {
+    padding: 0 18px;
+    border-radius: 10px;
+    border: none;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.95rem;
+    cursor: pointer;
+  }
+  #composer button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .typing {
+    align-self: flex-start;
+    color: var(--muted);
+    font-size: 0.85rem;
+    font-style: italic;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Agentic AI Stock Analysis</h1>
+    <p>Chats through <code>POST /api/chat</code>. Ask about a tracked ticker (e.g. "how is INFY.NS looking?").</p>
+    <div id="session-row">
+      <span>session: <code id="session-id-display">(new)</code></span>
+      <button id="new-session-btn" type="button">Start new session</button>
+    </div>
+  </header>
+
+  <div id="messages"></div>
+
+  <form id="composer" autocomplete="off">
+    <input id="message-input" type="text" placeholder="Ask about a stock…" autofocus />
+    <button id="send-btn" type="submit">Send</button>
+  </form>
+</div>
+
+<script>
+  const messagesEl = document.getElementById("messages");
+  const form = document.getElementById("composer");
+  const input = document.getElementById("message-input");
+  const sendBtn = document.getElementById("send-btn");
+  const sessionIdDisplay = document.getElementById("session-id-display");
+  const newSessionBtn = document.getElementById("new-session-btn");
+
+  let sessionId = null;
+
+  function addMessage(role, text, meta) {
+    const el = document.createElement("div");
+    el.className = "msg " + role;
+    el.textContent = text;
+    if (meta) {
+      const metaEl = document.createElement("span");
+      metaEl.className = "meta";
+      metaEl.textContent = meta;
+      el.appendChild(metaEl);
+    }
+    messagesEl.appendChild(el);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return el;
+  }
+
+  function setSessionId(id) {
+    sessionId = id;
+    sessionIdDisplay.textContent = id || "(new)";
+  }
+
+  function resetSession() {
+    setSessionId(null);
+    messagesEl.innerHTML = "";
+    addMessage("system", "New session started.");
+    input.focus();
+  }
+
+  newSessionBtn.addEventListener("click", resetSession);
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const message = input.value.trim();
+    if (!message) return;
+
+    addMessage("user", message);
+    input.value = "";
+    input.disabled = true;
+    sendBtn.disabled = true;
+
+    const typingEl = document.createElement("div");
+    typingEl.className = "typing";
+    typingEl.textContent = "Thinking…";
+    messagesEl.appendChild(typingEl);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+
+    try {
+      const body = { message: message };
+      if (sessionId) body.session_id = sessionId;
+
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      typingEl.remove();
+
+      if (!response.ok) {
+        const errText = await response.text();
+        addMessage("system", "Request failed (" + response.status + "): " + errText);
+        return;
+      }
+
+      const data = await response.json();
+      setSessionId(data.session_id);
+
+      const metaBits = [];
+      if (data.response_type) metaBits.push(data.response_type);
+      if (data.ticker) metaBits.push(data.ticker);
+
+      addMessage("assistant", data.reply, metaBits.join(" · "));
+    } catch (err) {
+      typingEl.remove();
+      addMessage("system", "Network error: " + err);
+    } finally {
+      input.disabled = false;
+      sendBtn.disabled = false;
+      input.focus();
+    }
+  });
+
+  addMessage("system", "New session started.");
+</script>
+</body>
+</html>
