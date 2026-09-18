@@ -16,6 +16,8 @@ that same exception type via psycopg2.connect, so no extra handling is
 needed here for that case.
 """
 
+import bootstrap  # noqa: F401  -- .env + OS trust store; must precede env reads
+
 import os
 
 import psycopg2

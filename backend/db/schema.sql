@@ -29,12 +29,19 @@
 -- VARCHAR(20) to match the width the Orchestrator specification's own
 -- orchestrator_runs.ticker column already uses.
 -- ============================================================================
+-- `active` is not in that pg_dump either -- it is required by
+-- backend/agents/technical_analysis/nodes/fetch_price_history.py, whose
+-- universe lookup reads "WHERE ticker = %s AND active". The separate ALTER
+-- below covers databases created before this column was added here, since
+-- CREATE TABLE IF NOT EXISTS leaves an existing table untouched.
 CREATE TABLE IF NOT EXISTS universe (
     ticker       VARCHAR(20) PRIMARY KEY,
     company_name VARCHAR(255),
     exchange     VARCHAR(20),
-    sector       VARCHAR(100)
+    sector       VARCHAR(100),
+    active       BOOLEAN DEFAULT TRUE
 );
+ALTER TABLE universe ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE;
 
 -- ============================================================================
 -- financial_statements -- source-of-truth for compute_growth,
@@ -195,6 +202,41 @@ CREATE TABLE IF NOT EXISTS "Technical".price_history (
     PRIMARY KEY (ticker, trade_date)
 );
 CREATE INDEX IF NOT EXISTS idx_price_history_ticker_date ON "Technical".price_history (ticker, trade_date DESC);
+
+-- ============================================================================
+-- "Technical".technical_analysis_results -- cached per-ticker/per-day output,
+-- written by backend/agents/technical_analysis/nodes/persist_results.py (see
+-- db/upsert.py's save_technical_analysis_results). Like price_history above,
+-- NOT from any specification document shared so far: every column below is
+-- taken directly from the `record` dict persist_results.py already builds, so
+-- the two stay in step. Confirm against the real Technical Analysis Subgraph
+-- specification's Database Schema section once available.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS "Technical".technical_analysis_results (
+    ticker               VARCHAR(20) NOT NULL REFERENCES universe(ticker),
+    analysis_date        DATE NOT NULL,
+    trend                VARCHAR(20),
+    momentum             VARCHAR(20),
+    volatility           VARCHAR(20),
+    support_level        NUMERIC(18, 4),
+    resistance_level     NUMERIC(18, 4),
+    overall_direction    VARCHAR(10),
+    confidence_score     NUMERIC(5, 2),
+    candlestick_pattern  VARCHAR(50),
+    pattern_direction    VARCHAR(10),
+    volume_confirmed     BOOLEAN,
+    trend_aligned        BOOLEAN,
+    entry_price          NUMERIC(18, 4),
+    stop_loss            NUMERIC(18, 4),
+    target_price         NUMERIC(18, 4),
+    risk_reward_ratio    NUMERIC(6, 2),
+    trade_status         VARCHAR(20),
+    technical_summary    JSONB,
+    created_at           TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (ticker, analysis_date)
+);
+CREATE INDEX IF NOT EXISTS idx_tar_ticker_date
+    ON "Technical".technical_analysis_results (ticker, analysis_date DESC);
 
 -- ============================================================================
 -- "Memory".user_memory -- NOT from any specification document shared so far

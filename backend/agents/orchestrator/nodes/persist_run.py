@@ -1,6 +1,7 @@
 """persist_run — terminal node.
 
-Writes the completed run to "Orchestrator".orchestrator_runs, mirroring
+Writes the completed run to orchestrator_runs -- unqualified, so the
+public schema, which is where db/schema.sql creates it -- mirroring
 each pillar subgraph's own persist_results.py convention. Reached after
 both build_final_response (the success path, including after human
 review) and build_error_response (invalid input) -- see graph.py -- so

@@ -36,6 +36,8 @@ Run from inside backend/:
     python -m db.seed_fundamentals
 """
 
+import bootstrap  # noqa: F401  -- .env + OS trust store; must precede env reads
+
 import datetime
 import math
 

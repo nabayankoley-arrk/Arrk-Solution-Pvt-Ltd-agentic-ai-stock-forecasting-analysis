@@ -20,6 +20,8 @@ llm_client._call_openrouter_chat, which raises a clear error instead of
 sending an unauthenticated request if it's unset).
 """
 
+import bootstrap  # noqa: F401  -- .env + OS trust store; must precede env reads
+
 import os
 
 

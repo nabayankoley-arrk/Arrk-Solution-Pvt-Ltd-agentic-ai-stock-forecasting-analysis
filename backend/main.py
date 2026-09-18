@@ -24,6 +24,8 @@ subgraph actually accepts and returns:
   - the fixed out-of-scope refusal (has "message", no "ticker")
 """
 
+import bootstrap  # noqa: F401  -- .env + OS trust store; must precede env reads
+
 import uuid
 from pathlib import Path
 from typing import List, Literal, Optional
@@ -140,6 +142,59 @@ class ChatResponse(BaseModel):
     ticker: Optional[str] = None
 
 
+# Phrases that mark a string as an internal/operational detail rather than
+# something a caller asked about: an unbuilt subgraph, an unreachable LLM
+# provider, a database problem, a raw exception or a leaked URL. The
+# Orchestrator puts these in `risk_flags` and in the decision `reason` (which
+# becomes `narrative`) on purpose -- they belong in orchestrator_runs and in
+# the logs, where they are needed for debugging. They just should not be read
+# back to someone who asked how a stock looks: "Sentiment Analysis subgraph is
+# not yet implemented" and "LLM Agent unavailable (429 Client Error ... )" are
+# statements about this deployment, not about the ticker.
+#
+# Matched case-insensitively as substrings, so the surrounding wording (the
+# "sentiment: " prefix the Orchestrator adds, the exception text appended after
+# a marker) does not have to be predicted exactly.
+_INTERNAL_DETAIL_MARKERS = (
+    "not yet implemented",
+    "not implemented",
+    "llm agent unavailable",
+    "deterministic fallback",
+    "database connection failed",
+    "connection failed",
+    "client error",
+    "server error",
+    "traceback",
+    "://",
+)
+
+
+def _is_internal_detail(text):
+    if not text:
+        return False
+    lowered = str(text).lower()
+    return any(marker in lowered for marker in _INTERNAL_DETAIL_MARKERS)
+
+
+def _is_unavailable_summary(label, summary):
+    """A pillar can come back without an "error" key and still be empty --
+    the Sentiment Agent returns a well-formed dict of Nones (see
+    agents/orchestrator/nodes/fetch_sentiment_analysis.py). Treat a summary
+    whose own directional verdict is missing as unavailable."""
+    if label == "technical":
+        return not (summary.get("technical_signal") or {}).get("direction")
+    if label == "fundamental":
+        return not (summary.get("composite") or {}).get("direction")
+    return not summary.get("direction")
+
+
+def _user_facing_flags(risk_flags):
+    """Drops operational noise, keeping genuine analytical risk flags (e.g.
+    the Fundamental Agent's own composite risk_flags, or a real pillar
+    disagreement) -- those are about the ticker and belong in the reply."""
+    return [flag for flag in risk_flags if not _is_internal_detail(flag)]
+
+
 def _format_analysis_reply(response):
     """response here is the Orchestrator's final_response (has
     "technical_summary"/"fundamental_summary"/"sentiment_summary" --
@@ -167,8 +222,10 @@ def _format_analysis_reply(response):
     support = support_resistance.get("support")
     resistance = support_resistance.get("resistance")
     current_price = technical.get("current_price")
-    risk_flags = response.get("risk_flags") or []
+    risk_flags = _user_facing_flags(response.get("risk_flags") or [])
     narrative = response.get("narrative")
+    if _is_internal_detail(narrative):
+        narrative = None
 
     parts = [f"Here's what I found for {ticker}:" if ticker else "Here's what I found:"]
     if current_price is not None:
@@ -181,6 +238,24 @@ def _format_analysis_reply(response):
         parts.append(f"Support around {support}, resistance around {resistance}.")
     if risk_flags:
         parts.append(f"Flags to note: {', '.join(str(flag) for flag in risk_flags[:3])}.")
+
+    # Filtering the internal flags above would otherwise let a partial read
+    # look like a complete one. Name the missing pillars plainly instead --
+    # which pillar had nothing to say is the caller's business; why it had
+    # nothing to say is not.
+    missing = [
+        label
+        for label, summary in (
+            ("technical", technical),
+            ("fundamental", fundamental),
+            ("sentiment", sentiment),
+        )
+        if not summary or "error" in summary or _is_unavailable_summary(label, summary)
+    ]
+    if missing:
+        listed = " and ".join(missing) if len(missing) < 3 else ", ".join(missing[:-1]) + " and " + missing[-1]
+        parts.append(f"This read is based on partial data -- {listed} analysis wasn't available.")
+
     if narrative:
         parts.append(f"Note: {narrative}")
     if len(parts) == 1:

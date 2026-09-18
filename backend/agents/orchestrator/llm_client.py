@@ -36,6 +36,8 @@ they share one provider-calling/JSON-parsing implementation rather than
 each reimplementing it.
 """
 
+import bootstrap  # noqa: F401  -- .env + OS trust store; must precede env reads
+
 import json
 import re
 
@@ -98,10 +100,27 @@ def call_llm_chat(system_prompt, user_prompt, timeout=None):
     module docstring).
     """
     if config.LLM_PROVIDER == "openrouter":
-        return _call_openrouter_chat(system_prompt, user_prompt, timeout or config.OPENROUTER_TIMEOUT_SECONDS)
-    if config.LLM_PROVIDER == "ollama":
-        return _call_ollama_chat(system_prompt, user_prompt, timeout or config.OLLAMA_TIMEOUT_SECONDS)
-    raise ValueError(f"unknown LLM_PROVIDER: {config.LLM_PROVIDER!r}")
+        model = config.OPENROUTER_MODEL
+        raw = _call_openrouter_chat(system_prompt, user_prompt, timeout or config.OPENROUTER_TIMEOUT_SECONDS)
+    elif config.LLM_PROVIDER == "ollama":
+        model = config.OLLAMA_MODEL
+        raw = _call_ollama_chat(system_prompt, user_prompt, timeout or config.OLLAMA_TIMEOUT_SECONDS)
+    else:
+        raise ValueError(f"unknown LLM_PROVIDER: {config.LLM_PROVIDER!r}")
+
+    # Debug trace: confirms a real model reply arrived rather than
+    # get_decision's deterministic fallback (which never reaches this
+    # function -- it is only used when this call *raises*). An empty or
+    # whitespace-only `raw` is the interesting case: the request succeeded,
+    # so nothing raises, but _parse_decision then fails and the caller
+    # silently falls back. Remove this print, or gate it behind a log
+    # level, once the provider/model in use is known-good.
+    print(
+        f"[llm] provider={config.LLM_PROVIDER} model={model} "
+        f"chars={len(raw or '')} raw={(raw or '')[:300]!r}",
+        flush=True,
+    )
+    return raw
 
 
 def _call_ollama_chat(system_prompt, user_prompt, timeout):
