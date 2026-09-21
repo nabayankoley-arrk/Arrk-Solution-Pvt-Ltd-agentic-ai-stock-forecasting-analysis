@@ -55,7 +55,12 @@ class FetchRequest(BaseModel):
     symbols: List[str] = Field(
         ...,
         min_length=1,
-        description="Tickers, registered names, ISINs or BSE scrip codes.",
+        max_length=config.MAX_SYMBOLS_PER_REQUEST,
+        description=(
+            "Tickers, registered names, ISINs or BSE scrip codes. At most "
+            f"{config.MAX_SYMBOLS_PER_REQUEST} per request: a fetch is synchronous and "
+            "costs roughly six seconds per company before its PDFs are even downloaded."
+        ),
         examples=[["INFY", "AVANTEL", "532406"]],
     )
     types: List[str] = Field(

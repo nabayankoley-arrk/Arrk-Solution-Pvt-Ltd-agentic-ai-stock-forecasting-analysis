@@ -22,6 +22,10 @@ LIST_URL = "https://api.bseindia.com/BseIndiaAPI/api/ListofScripData/w"
 LIST_REFERER = "https://www.bseindia.com/corporates/List_Scrips.html"
 
 CACHE_FILENAME = "scrips.json"
+# Bumped whenever _normalise() changes shape. Without it, a cache written by an
+# older version is loaded happily and every new field reads as missing --
+# market_cap silently zero, and "the top 20 by market cap" silently empty.
+CACHE_VERSION = 2
 # New listings and name changes do not matter within a week of work, and the
 # list costs 1.7 MB to refetch.
 CACHE_MAX_AGE_DAYS = 7
@@ -40,6 +44,8 @@ def _load_cache(cache_dir):
         return None
     if not isinstance(cached, dict) or not isinstance(cached.get("entries"), list):
         return None
+    if cached.get("version") != CACHE_VERSION:
+        return None
     try:
         fetched_on = datetime.date.fromisoformat(cached.get("fetched_on", ""))
     except ValueError:
@@ -57,7 +63,11 @@ def _save_cache(cache_dir, entries):
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(partial, "w", encoding="utf-8") as handle:
             json.dump(
-                {"fetched_on": datetime.date.today().isoformat(), "entries": entries},
+                {
+                    "version": CACHE_VERSION,
+                    "fetched_on": datetime.date.today().isoformat(),
+                    "entries": entries,
+                },
                 handle,
             )
         partial.replace(path)
@@ -66,6 +76,13 @@ def _save_cache(cache_dir, entries):
             partial.unlink()
         except OSError:
             pass
+
+
+def _market_cap(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _normalise(row):
@@ -77,6 +94,9 @@ def _normalise(row):
         "isin": documents.clean(row.get("ISIN_NUMBER")).upper(),
         "group": documents.clean(row.get("GROUP")),
         "industry": documents.clean(row.get("INDUSTRY")),
+        # BSE reports market capitalisation in lakh; it is what ranks the
+        # top-20 job. Absent or unparseable means unranked, not zero-valued.
+        "market_cap": _market_cap(row.get("Mktcap")),
     }
 
 

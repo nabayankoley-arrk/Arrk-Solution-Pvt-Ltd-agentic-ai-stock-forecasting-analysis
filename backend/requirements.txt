@@ -11,3 +11,7 @@ requests>=2.31
 # api -- HTTP layer over ingestion (api/app.py)
 fastapi
 uvicorn
+
+# jobs/ -- PDF text extraction and Claude summarisation
+pymupdf
+anthropic

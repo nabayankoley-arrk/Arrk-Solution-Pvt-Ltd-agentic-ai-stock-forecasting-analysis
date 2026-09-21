@@ -17,7 +17,7 @@ import json
 import pathlib
 import tempfile
 
-from . import collect, config, documents, downloader, taxonomy
+from . import collect, config, documents, downloader, extract, taxonomy
 from .errors import ConfigurationError, SourceUnavailable
 from .sources import bse, company_site, scrip_master
 
@@ -1005,6 +1005,53 @@ def test_attachment_key():
     check("no URL yields no key", key({"urls": []}) == "")
 
 
+def test_extract_helpers():
+    print("\n--- reading PDFs ---")
+    check_raises(
+        "a missing file is reported, not crashed on",
+        extract.NotExtractable,
+        lambda: extract.extract("no/such/file.pdf"),
+    )
+    with tempfile.TemporaryDirectory() as temp_dir:
+        bogus = pathlib.Path(temp_dir) / "not-really.pdf"
+        bogus.write_bytes(b"this is not a PDF")
+        check_raises(
+            "a file that is not a PDF is reported",
+            extract.NotExtractable,
+            lambda: extract.extract(bogus),
+        )
+
+    body = "para one\n\n" + ("x" * 500) + "\n\n" + ("y" * 500)
+    check("no cap means no truncation", extract.head(body, None) == body)
+    check("a cap above the length is a no-op", extract.head(body, 99999) == body)
+    capped = extract.head(body, 600)
+    check("a cap truncates", len(capped) <= 600)
+    check(
+        "truncation prefers a paragraph break near the cut",
+        capped.endswith("x" * 10),
+        repr(capped[-20:]),
+    )
+    # A document with no blank lines must not be cut back to almost nothing.
+    solid = "z" * 1000
+    check("a document with no breaks is cut at the cap", len(extract.head(solid, 600)) == 600)
+
+
+def test_report_type_abbreviations():
+    print("\n--- AR / TR abbreviations ---")
+    from db import documents as store
+
+    check("an annual report is AR", store.report_type_for(["annual_report"]) == "AR")
+    check("a transcript is TR", store.report_type_for(["transcript"]) == "TR")
+    check(
+        "a document that is both is stored as the annual report",
+        store.report_type_for(["transcript", "annual_report"]) == "AR",
+    )
+    check("anything else is neither", store.report_type_for(["results", "agm_egm"]) is None)
+    check("no types at all is neither", store.report_type_for([]) is None)
+    check("a combined report and AGM notice is AR",
+          store.report_type_for(["annual_report", "agm_egm"]) == "AR")
+
+
 if __name__ == "__main__":
     test_classification()
     test_type_vetoes()
@@ -1028,6 +1075,8 @@ if __name__ == "__main__":
     test_annual_report_archive()
     test_archive_wins_on_annual_reports()
     test_attachment_key()
+    test_extract_helpers()
+    test_report_type_abbreviations()
 
     print()
     if failures:

@@ -106,7 +106,7 @@ from, and a checksum to prove the local file is unaltered.
 
 | Field | Default | Notes |
 | --- | --- | --- |
-| `symbols` | required | Tickers, names, ISINs or scrip codes |
+| `symbols` | required | Tickers, names, ISINs or scrip codes. **1 to 10 per request.** |
 | `types` | `["annual_report","transcript"]` | Or `["all"]` for every report type; see `/health` for the list |
 | `latest` | `1` | N most recent **of each type**; `0` for everything in the window |
 | `years` | `1` | Lookback from today, 1–40 |
@@ -144,8 +144,11 @@ Two things are deliberately not built, and both matter if this becomes more
 than a desk tool:
 
 - **A fetch is synchronous** and paced at roughly one request per second per
-  host, so several symbols take tens of seconds and hold the connection open.
-  A watchlist of hundreds needs a job queue and a polling endpoint.
+  host. Measured on 2026-09-11, discovery alone costs about **6 seconds per
+  company** before a single PDF is downloaded, so ten companies hold the
+  connection open for minutes. That is why `symbols` is capped at ten: beyond
+  that a browser or a reverse proxy will time out before the work finishes. A
+  real watchlist needs a job queue and a polling endpoint, which is not built.
 - **There is no authentication and no rate limiting.** The service writes files
   to a server-side directory chosen by the caller (`out_dir`), which is fine on
   localhost and not fine on a shared host. Bind it to localhost, or put auth

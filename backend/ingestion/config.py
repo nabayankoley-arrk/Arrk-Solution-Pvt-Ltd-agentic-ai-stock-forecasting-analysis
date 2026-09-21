@@ -59,6 +59,13 @@ CONFIRM_ABOVE_BYTES = 200 * 1024 * 1024
 DEFAULT_DOCUMENT_TYPES = ("annual_report", "transcript")
 # Latest one of each type. 0 means "no limit".
 DEFAULT_LATEST_PER_TYPE = 1
+# How many companies one API request may ask for. Discovery alone costs about
+# six seconds per company because requests to a host are paced a second apart,
+# and the PDFs come on top of that, so a request holds its connection open for
+# minutes. Ten keeps the worst case near four minutes, inside the timeouts a
+# browser or a reverse proxy will usually allow. A real watchlist wants a job
+# queue rather than a bigger number here.
+MAX_SYMBOLS_PER_REQUEST = 10
 DEFAULT_LOOKBACK_YEARS = 1
 DEFAULT_OUTPUT_DIR = "downloads"
 # Holds the BSE scrip list, which is refetched at most weekly. Separate from
