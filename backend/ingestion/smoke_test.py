@@ -17,7 +17,7 @@ import json
 import pathlib
 import tempfile
 
-from . import collect, config, documents, downloader, extract, taxonomy
+from . import collect, config, documents, downloader, extract, summarise, taxonomy
 from .errors import ConfigurationError, SourceUnavailable
 from .sources import bse, company_site, scrip_master
 
@@ -1052,6 +1052,88 @@ def test_report_type_abbreviations():
           store.report_type_for(["annual_report", "agm_egm"]) == "AR")
 
 
+# --- summarising, with the LLM stubbed out ---
+
+def _stub_llm(replies):
+    """Replaces summarise.call_llm_chat, recording every (system, user) pair."""
+    calls = []
+
+    def fake(system_prompt, user_prompt, timeout=None):
+        calls.append((system_prompt, user_prompt))
+        return replies(system_prompt, user_prompt)
+
+    return calls, fake
+
+
+def test_split():
+    print("\n--- splitting a document that will not fit ---")
+    check("short text is one piece", summarise.split("abc", 100) == ["abc"])
+
+    body = "para\n\n" * 400
+    pieces = summarise.split(body, 200)
+    check("long text splits", len(pieces) > 1)
+    check("every piece is within the limit", all(len(p) <= 200 for p in pieces))
+    check(
+        "nothing is dropped",
+        sum(len(p) for p in pieces) >= len(body.strip()) - 2 * len(pieces),
+    )
+    # A single paragraph longer than the limit must be cut, not discarded:
+    # losing a page of a dense table is worse than splitting one awkwardly.
+    check("an oversized paragraph is cut, not dropped", len(summarise.split("z" * 900, 200)) == 5)
+
+
+def test_summarise_paths():
+    print("\n--- summarising ---")
+    original = summarise.call_llm_chat
+    original_limit = summarise.MAX_INPUT_CHARS
+
+    def replies(system_prompt, user_prompt):
+        if system_prompt is summarise.SYSTEM_PARTIAL:
+            return "NOTHING OF NOTE" if "Section 2 " in user_prompt else "notes: revenue up"
+        return "Company X annual report FY26.\n- revenue up"
+
+    try:
+        calls, summarise.call_llm_chat = _stub_llm(replies)
+        result = summarise.summarise("short doc", "AR", "Co", "Annual Report")
+        check("a document that fits takes one call", len(calls) == 1, str(len(calls)))
+        check("and uses the final prompt", calls[0][0] is summarise.SYSTEM)
+        check("chunks reported as 1", result["chunks"] == 1)
+        check("characters reported", result["chars_in"] == len("short doc"))
+
+        calls, summarise.call_llm_chat = _stub_llm(replies)
+        summarise.MAX_INPUT_CHARS = 200
+        result = summarise.summarise("para\n\n" * 400, "AR", "Co", "Annual Report")
+        partials = [c for c in calls if c[0] is summarise.SYSTEM_PARTIAL]
+        combines = [c for c in calls if c[0] is summarise.SYSTEM_COMBINE]
+        check(
+            "a document that does not fit is read in parts, then combined",
+            len(partials) == result["chunks"] and len(combines) == 1,
+            f"{len(partials)} partials, {len(combines)} combines",
+        )
+        check("a section with nothing in it is left out of the notes",
+              "section 2 of" not in combines[0][1].lower())
+        check("the combine step sees the other notes", "revenue up" in combines[0][1])
+
+        summarise.call_llm_chat = lambda *a, **k: "   "
+        summarise.MAX_INPUT_CHARS = original_limit
+        check_raises(
+            "an empty reply is a failure, not an empty summary",
+            summarise.SummaryFailed,
+            lambda: summarise.summarise("short", "TR", "Co", "T"),
+        )
+
+        summarise.MAX_INPUT_CHARS = 10
+        summarise.call_llm_chat = lambda s, u, timeout=None: "NOTHING OF NOTE"
+        check_raises(
+            "a document whose every section is empty is a failure",
+            summarise.SummaryFailed,
+            lambda: summarise.summarise("aaaa\n\nbbbb\n\ncccc", "AR", "Co", "T"),
+        )
+    finally:
+        summarise.call_llm_chat = original
+        summarise.MAX_INPUT_CHARS = original_limit
+
+
 if __name__ == "__main__":
     test_classification()
     test_type_vetoes()
@@ -1077,6 +1159,8 @@ if __name__ == "__main__":
     test_attachment_key()
     test_extract_helpers()
     test_report_type_abbreviations()
+    test_split()
+    test_summarise_paths()
 
     print()
     if failures:

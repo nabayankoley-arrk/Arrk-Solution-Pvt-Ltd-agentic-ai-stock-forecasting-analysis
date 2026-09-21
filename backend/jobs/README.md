@@ -5,12 +5,12 @@ Manually-run jobs. Each is a module with a `__main__` guard, run from `backend/`
 | Job | Purpose |
 | --- | --- |
 | `python -m jobs.top20` | Print the current top 20 BSE companies by market capitalisation |
-| `python -m jobs.summarise_reports` | Download the latest AR and TR per company, summarise each with Claude, store the summaries |
+| `python -m jobs.summarise_reports` | Download the latest AR and TR per company, summarise each, store the summaries |
 
 ## Before the first run
 
 Two things must be provided. Neither is in the repository, and the job checks
-both before spending anything.
+both before it downloads anything.
 
 **1. A Postgres database.** The project's `backend/db/` layer defines the
 schema and the connection; this job adds one table, `document_summaries`, to
@@ -34,13 +34,19 @@ python -m db.apply_schema            # load schema.sql
 changes nothing. `schema.sql`'s own header gives the `psql` equivalent, which
 remains the reference way to load it.
 
-**2. An Anthropic API key.**
+**2. An LLM key.** Summarising reuses the project's own client,
+`agents/orchestrator/llm_client.call_llm_chat()`, so provider and model come
+from `agents/orchestrator/config.py` and the environment. Put them in
+`backend/.env`, which `bootstrap.py` loads and which is gitignored:
 
-```powershell
-$env:ANTHROPIC_API_KEY = "sk-ant-..."
+```
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=...
+OPENROUTER_MODEL=inclusionai/ling-3.0-flash-fin:free
 ```
 
-Or sign in once with `ant auth login`, which stores a profile the SDK reads.
+`LLM_PROVIDER=ollama` runs against a local model instead, with no key. This job
+never picks a provider of its own -- change the environment, not the code.
 
 ## The table
 
@@ -72,10 +78,10 @@ is not the same set as `universe`, and uses unsuffixed tickers (`INFY`) where
 ## Running it
 
 ```powershell
-# What would happen, what it would cost. Downloads and reads, calls no model.
+# What would happen and how big it is. Downloads and reads, calls no model.
 python -m jobs.summarise_reports --check
 
-# Same, but stops before the token count too
+# Same, but stops before reading sizes too
 python -m jobs.summarise_reports --dry-run
 
 # The real run: top 20 by market cap
@@ -85,9 +91,9 @@ python -m jobs.summarise_reports
 python -m jobs.summarise_reports --symbols INFY TCS RELIANCE
 ```
 
-**Run `--check` first.** It prints the exact token count from the API's own
-counter and the estimated cost. A run whose estimate exceeds $10 stops and asks
-for `--yes`, in the same way the downloader guards a large download.
+**Run `--check` first.** It downloads and reads the PDFs, then reports their
+sizes and which will need splitting -- without calling the model or writing a
+row.
 
 ### Options
 
@@ -96,17 +102,15 @@ for `--yes`, in the same way the downloader guards a large download.
 | `--symbols` | top 20 | Pin an exact set by ticker, name or scrip code |
 | `--count N` | 20 | How many of the top companies |
 | `--years N` | 1 | How far back to look for the latest of each |
-| `--check` | | Report plan, tokens and cost, then stop |
+| `--check` | | Report plan, sizes and which will be split, then stop |
 | `--dry-run` | | Download and read only |
 | `--force` | | Re-summarise documents already stored |
-| `--yes` | | Proceed past the $10 threshold |
-| `--effort` | `low` | Model effort: `low` … `max` |
-| `--model` | `claude-opus-5` | |
+| `--delay` | 1.0 | Seconds between requests to a given host |
 
 ### Exit codes
 
 `0` success, `1` some documents failed, `2` a prerequisite is missing (no
-database, no API key, cost above the threshold), `3` a source was unreachable.
+database, no API key), `3` a source was unreachable.
 
 ## What it does
 
@@ -117,7 +121,7 @@ whichever of the two exists, which is the same rule the fetcher uses:
 ingestion.collect     find the latest AR and TR (BSE, company site as fallback)
 ingestion.downloader  write the PDFs, verify %PDF, record sha256
 ingestion.extract     PyMuPDF text layer
-ingestion.summarise   Claude, streamed
+ingestion.summarise   the configured LLM, in parts if needed
 db.upsert             one row, keyed on sha256
 ```
 
@@ -126,30 +130,32 @@ a document whose `sha256` is already in `document_summaries` is not sent to the
 model again; and the write is `ON CONFLICT (sha256) DO UPDATE`, so the same
 document refreshes its row rather than duplicating it.
 
-## Cost, which is the thing to watch
+## Long documents, which is the thing to watch
 
 Annual reports are large. Measured on real filings:
 
 | Document | Pages | Characters |
 | --- | --- | --- |
-| State Bank of India annual report | 756 | 1,905,760 |
+| State Bank of India annual report | 756 | 1,906,508 |
 | Infosys annual report | 384 | 1,314,631 |
 | Avantel annual report | 261 | 643,779 |
 | Avantel AGM transcript | 18 | 62,604 |
 
-That is roughly 160,000–475,000 input tokens for an annual report, against a
-few thousand for a transcript. Twenty companies is therefore dominated entirely
-by the annual reports, and at `claude-opus-5` rates ($5 per million input
-tokens) a full top-20 run is tens of dollars. `--check` gives you the real
-number before you commit.
+`inclusionai/ling-3.0-flash-fin:free` holds 262,144 tokens, which is roughly a
+million characters of English financial prose. So smaller annual reports fit in
+one call and the largest do not -- and since this job targets the top 20 by
+market capitalisation, the ones that do not fit are exactly the biggest
+companies.
 
-Nothing is ever truncated silently. If you want to cap what is sent, that is a
-deliberate change to `ingestion.extract.head`, and the row records
-`char_count` so a summary built on a partial document is identifiable later.
+A document over `SUMMARY_MAX_INPUT_CHARS` (800,000 by default, leaving room for
+the prompt and the reply) is therefore read in parts: each part is reduced to
+notes, and those notes are summarised together. Nothing is truncated silently.
+`--check` reports which documents will be split and into how many parts, and
+the stored row records the `char_count` it was built from.
 
-Two levers if the cost is too high: `--effort` is already at `low`, and
-`--symbols` narrows the set. Choosing a cheaper model is a decision for you,
-not a default I should pick — `--model` takes any model id.
+Raise `SUMMARY_MAX_INPUT_CHARS` if you move to a model with a larger window;
+lower it if you move to a smaller one. The configured model is free, so the
+number of calls costs time rather than money.
 
 ## Scheduling
 

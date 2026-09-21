@@ -8,6 +8,5 @@ psycopg2-binary>=2.9
 python-dotenv>=1.0
 truststore>=0.9
 
-# jobs/ -- PDF text extraction and Claude summarisation
+# jobs/ -- PDF text extraction (summarisation reuses the orchestrator LLM client)
 pymupdf>=1.24
-anthropic>=1.0

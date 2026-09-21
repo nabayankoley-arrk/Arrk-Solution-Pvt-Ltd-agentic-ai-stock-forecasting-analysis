@@ -1,20 +1,37 @@
-"""Turn an extracted filing into a short summary, via the Claude API.
+"""Turn an extracted filing into a short summary, via the project's LLM client.
 
-Streaming is used because the input is long -- a large annual report runs to
-several hundred thousand tokens, and a non-streaming request that size risks
-an HTTP timeout before the first byte.
+Routed through agents.orchestrator.llm_client.call_llm_chat(), which that
+module's own docstring names as "the one provider-agnostic entry point
+everything else in this package should use". So provider, model, API key and
+temperature all come from agents/orchestrator/config.py and the environment
+(LLM_PROVIDER, OPENROUTER_MODEL, OPENROUTER_API_KEY), and this module never
+picks a provider of its own.
 
-Effort defaults to "low". Condensing a document into a dozen lines is a
-reading task rather than a reasoning one, and low effort keeps a twenty-company
-run affordable. Raise it with --effort if the summaries come back thin.
+Annual reports are the hard case. Measured on real filings, they run from
+640,000 characters (Avantel, 261 pages) to 1.9 million (State Bank of India,
+756 pages). The configured default model holds 262,144 tokens, which is enough
+for the smaller ones and not the larger, so a document that does not fit is
+summarised in parts and those partial summaries are then summarised together.
+Nothing is silently truncated: the caller is told how many parts were used, and
+the stored row records the character count it was built from.
 """
 
-import anthropic
+import os
+import re
 
-MODEL = "claude-opus-5"
-# A short summary, as asked for. This is a ceiling, not a target.
-MAX_SUMMARY_TOKENS = 1200
-DEFAULT_EFFORT = "low"
+from agents.orchestrator import config as llm_config
+from agents.orchestrator.llm_client import LLMAgentError, call_llm_chat
+
+# English financial prose runs near four characters per token; tables and
+# figures tokenise worse. The default model's 262,144-token context would be
+# filled exactly by about a million characters, so this leaves roughly a fifth
+# of the window for the system prompt, the reply, and that error. Override with
+# SUMMARY_MAX_INPUT_CHARS when changing to a model with a different window.
+MAX_INPUT_CHARS = int(os.environ.get("SUMMARY_MAX_INPUT_CHARS", "800000"))
+
+# A 200,000-word prompt takes minutes, not seconds. The orchestrator's own
+# 60-second default is sized for a small JSON decision and is far too short.
+TIMEOUT_SECONDS = int(os.environ.get("SUMMARY_TIMEOUT_SECONDS", "600"))
 
 DOCUMENT_LABELS = {
     "AR": "annual report",
@@ -41,113 +58,158 @@ Rules:
 - No preamble, no closing commentary, no investment recommendation.
 - Plain text. No markdown headers."""
 
+# Used on each part of a document too large for one call. Deliberately asks for
+# raw material rather than a finished summary: a well-formed summary of part
+# three of seven would read as though it covered the whole company.
+SYSTEM_PARTIAL = """You are reading one section of a longer filing by an Indian listed company.
+
+Extract only what a later step needs to write a summary of the whole document:
+
+- Every reported figure, with its label, unit, currency and period.
+- Statements about performance, margins, costs, cash flow and debt.
+- Management's stated outlook, guidance and commentary.
+- Risks, litigation and governance matters.
+
+Rules:
+- Use only what this section states. Never infer or estimate.
+- Omit boilerplate, notices, page furniture and repeated headers.
+- If the section carries nothing of substance, reply with exactly: NOTHING OF NOTE
+- Terse notes, not prose. No preamble."""
+
+SYSTEM_COMBINE = SYSTEM + """
+
+You are working from ordered notes taken from consecutive sections of one
+document, not from the document itself. Treat them as a single source. Where
+two notes disagree, prefer the more specific figure and do not remark on the
+discrepancy."""
+
+_PARAGRAPH = re.compile(r"\n\s*\n")
+_NOTHING = "NOTHING OF NOTE"
+
 
 class SummaryFailed(RuntimeError):
     """The model did not return a usable summary."""
 
 
-class CredentialsMissing(RuntimeError):
-    """No Anthropic credentials are available to this process."""
+class NotConfigured(RuntimeError):
+    """The LLM provider is not usable -- usually a missing API key."""
 
 
-def build_client(api_key=None):
-    """An Anthropic client.
+def describe_provider():
+    """Provider and model in use, for a run to report before it starts."""
+    if llm_config.LLM_PROVIDER == "ollama":
+        return f"ollama / {llm_config.OLLAMA_MODEL}"
+    return f"{llm_config.LLM_PROVIDER} / {llm_config.OPENROUTER_MODEL}"
 
-    With no api_key the SDK resolves credentials itself, from
-    ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or an `ant auth login` profile.
 
-    An unauthenticated client constructs without complaint and only fails on
-    the first request, several minutes into a run, as a TypeError from inside
-    the SDK. Failing here instead keeps that cost off the table.
+def check_ready():
+    """Raises NotConfigured if a call would certainly fail.
+
+    Checked before any downloading, so a missing key costs a second rather than
+    surfacing after twenty documents have been fetched and read.
     """
-    try:
-        client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
-        client._validate_headers({}, {})
-    except TypeError as exc:
-        raise CredentialsMissing(
-            "no Anthropic credentials found. Set ANTHROPIC_API_KEY, for example\n"
-            '  PowerShell:  $env:ANTHROPIC_API_KEY = "sk-ant-..."\n'
-            "  bash:        export ANTHROPIC_API_KEY=sk-ant-...\n"
-            "or sign in once with 'ant auth login', which stores a profile the SDK reads."
-        ) from exc
-    except AttributeError:
-        # A future SDK may drop the private helper; the client is still usable.
-        pass
-    return client
+    if llm_config.LLM_PROVIDER == "openrouter" and not llm_config.OPENROUTER_API_KEY:
+        raise NotConfigured(
+            "OPENROUTER_API_KEY is not set, and LLM_PROVIDER is openrouter.\n"
+            "Put it in backend/.env (loaded by bootstrap.py, and gitignored):\n"
+            "  OPENROUTER_API_KEY=...\n"
+            "  OPENROUTER_MODEL=inclusionai/ling-3.0-flash-fin:free\n"
+            "Or set LLM_PROVIDER=ollama to use a local model instead."
+        )
+    if llm_config.LLM_PROVIDER not in ("openrouter", "ollama"):
+        raise NotConfigured(f"unknown LLM_PROVIDER: {llm_config.LLM_PROVIDER!r}")
 
 
-def _prompt(text, report_type, company, title, filed_on):
+def _header(report_type, company, title, filed_on):
     label = DOCUMENT_LABELS.get(report_type, "filing")
     header = f"Company: {company}\nDocument: {title}\nType: {label}"
     if filed_on:
         header += f"\nFiled: {filed_on}"
-    return f"{header}\n\n---\n\n{text}"
+    return header
 
 
-def count_tokens(client, text, report_type, company, title, filed_on="", model=MODEL):
-    """Input tokens this document would cost, for a pre-flight estimate.
+def split(text, limit=None):
+    """Split into pieces no larger than `limit`, at paragraph breaks.
 
-    Uses the API's own counter rather than a local approximation, because the
-    whole point of the estimate is to be right about the bill.
+    A paragraph longer than the limit on its own is cut at the limit rather
+    than dropped -- losing a page of a dense table is worse than splitting one
+    awkwardly.
     """
-    counted = client.messages.count_tokens(
-        model=model,
-        system=SYSTEM,
-        messages=[{"role": "user", "content": _prompt(text, report_type, company, title, filed_on)}],
-    )
-    return counted.input_tokens
+    limit = limit or MAX_INPUT_CHARS
+    if len(text) <= limit:
+        return [text]
+
+    pieces, current = [], ""
+    for paragraph in _PARAGRAPH.split(text):
+        if len(paragraph) > limit:
+            if current:
+                pieces.append(current)
+                current = ""
+            for start in range(0, len(paragraph), limit):
+                pieces.append(paragraph[start:start + limit])
+            continue
+        if len(current) + len(paragraph) + 2 > limit:
+            pieces.append(current)
+            current = paragraph
+        else:
+            current = f"{current}\n\n{paragraph}" if current else paragraph
+    if current:
+        pieces.append(current)
+    return pieces
 
 
-def summarise(
-    client,
-    text,
-    report_type,
-    company,
-    title,
-    filed_on="",
-    model=MODEL,
-    effort=DEFAULT_EFFORT,
-):
+def _ask(system_prompt, user_prompt):
+    try:
+        reply = call_llm_chat(system_prompt, user_prompt, timeout=TIMEOUT_SECONDS)
+    except LLMAgentError as exc:
+        raise NotConfigured(str(exc)) from exc
+    except Exception as exc:  # requests' network and HTTP errors
+        raise SummaryFailed(f"{type(exc).__name__}: {str(exc)[:200]}") from exc
+    if not (reply or "").strip():
+        raise SummaryFailed("the model returned an empty reply")
+    return reply.strip()
+
+
+def summarise(text, report_type, company, title, filed_on="", progress=None):
     """A short summary of one filing.
 
-    Raises SummaryFailed when the model declines the request or returns no
-    text, so a caller never stores an empty summary as though it succeeded.
+    Documents that fit the context window are summarised in one call; larger
+    ones are read in parts and those notes summarised together. `progress` is
+    called with a short status string when a document needs more than one call,
+    since that path takes minutes.
     """
-    try:
-        with client.messages.stream(
-            model=model,
-            max_tokens=MAX_SUMMARY_TOKENS,
-            system=SYSTEM,
-            thinking={"type": "adaptive"},
-            output_config={"effort": effort},
-            messages=[
-                {
-                    "role": "user",
-                    "content": _prompt(text, report_type, company, title, filed_on),
-                }
-            ],
-        ) as stream:
-            message = stream.get_final_message()
-    except anthropic.APIStatusError as exc:
-        raise SummaryFailed(f"Claude API returned {exc.status_code}: {exc}") from exc
-    except anthropic.APIConnectionError as exc:
-        raise SummaryFailed(f"could not reach the Claude API: {exc}") from exc
+    header = _header(report_type, company, title, filed_on)
+    parts = split(text)
 
-    # Always check stop_reason before reading content: a refusal is an HTTP 200.
-    if message.stop_reason == "refusal":
-        detail = getattr(message, "stop_details", None)
-        category = getattr(detail, "category", None) or "unspecified"
-        raise SummaryFailed(f"the model declined this document ({category})")
+    if len(parts) == 1:
+        summary = _ask(SYSTEM, f"{header}\n\n---\n\n{text}")
+    else:
+        if progress:
+            progress(f"{len(text):,} characters: reading in {len(parts)} parts")
+        notes = []
+        for index, part in enumerate(parts, 1):
+            if progress:
+                progress(f"  part {index} of {len(parts)}")
+            note = _ask(
+                SYSTEM_PARTIAL,
+                f"{header}\nSection {index} of {len(parts)}\n\n---\n\n{part}",
+            )
+            if note.upper().startswith(_NOTHING):
+                continue
+            notes.append(f"--- notes from section {index} of {len(parts)} ---\n{note}")
 
-    summary = "".join(
-        block.text for block in message.content if block.type == "text"
-    ).strip()
-    if not summary:
-        raise SummaryFailed(f"the model returned no text (stop_reason: {message.stop_reason})")
+        if not notes:
+            raise SummaryFailed(
+                f"all {len(parts)} sections came back empty; the text layer is "
+                "probably boilerplate or the document did not extract properly"
+            )
+        if progress:
+            progress(f"  combining {len(notes)} set(s) of notes")
+        summary = _ask(SYSTEM_COMBINE, f"{header}\n\n---\n\n" + "\n\n".join(notes))
 
     return {
         "summary": summary,
-        "model": model,
-        "input_tokens": message.usage.input_tokens,
-        "output_tokens": message.usage.output_tokens,
+        "model": describe_provider(),
+        "chunks": len(parts),
+        "chars_in": len(text),
     }

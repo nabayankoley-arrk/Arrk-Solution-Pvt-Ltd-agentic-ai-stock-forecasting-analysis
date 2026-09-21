@@ -2,7 +2,7 @@
 
 Run manually, from the backend/ directory:
 
-    python -m jobs.summarise_reports --check       # what would happen, and what it costs
+    python -m jobs.summarise_reports --check       # what would happen, and how big it is
     python -m jobs.summarise_reports --dry-run     # download and read, no model, no database
     python -m jobs.summarise_reports               # the real run, top 20 by market cap
 
@@ -11,7 +11,7 @@ The pipeline, per company:
     latest annual report + latest call transcript   ingestion.collect
         -> PDF on disk                              ingestion.downloader
         -> text                                     ingestion.extract  (PyMuPDF)
-        -> short summary                            ingestion.summarise (Claude)
+        -> short summary                            ingestion.summarise (OpenRouter)
         -> one row, keyed on the PDF's sha256       db.upsert
 
 Stored as report_type "AR" for an annual report and "TR" for a transcript.
@@ -21,9 +21,10 @@ downloaded again; a document whose sha256 is already in document_summaries is
 not sent to the model again; and a row is written with ON CONFLICT so the same
 document updates rather than duplicating.
 
-Cost is the reason for --check. An annual report runs to several hundred
-thousand tokens, so twenty of them is real money, and the run tells you the
-figure before spending it rather than after.
+Provider, model and API key come from agents/orchestrator/config.py and the
+environment (LLM_PROVIDER, OPENROUTER_MODEL, OPENROUTER_API_KEY) -- this job
+never picks a provider of its own. An annual report too large for the
+model's context window is read in parts and those notes summarised together.
 """
 
 import argparse
@@ -45,14 +46,9 @@ from . import top20
 WANTED_TYPES = ["annual_report", "transcript"]
 LATEST_PER_TYPE = 1
 
-# Published rates for claude-opus-5, US dollars per million tokens. Used only
-# to print an estimate; nothing depends on them being current.
-INPUT_USD_PER_MTOK = 5.00
-OUTPUT_USD_PER_MTOK = 25.00
-
-# A model spend above this needs an explicit --yes, mirroring the download
-# guard. Twenty annual reports can exceed it comfortably.
-CONFIRM_ABOVE_USD = 10.0
+# What matters per document is now whether it fits the model's context
+# window, not what it costs: the configured model is free. A document over
+# this many characters is summarised in parts -- see ingestion/summarise.py.
 
 
 def _human_bytes(count):
@@ -65,18 +61,13 @@ def _human_bytes(count):
         size /= 1024
 
 
-def _estimated_usd(input_tokens, output_tokens=0):
-    return (
-        input_tokens / 1_000_000 * INPUT_USD_PER_MTOK
-        + output_tokens / 1_000_000 * OUTPUT_USD_PER_MTOK
-    )
 
 
 def _build_parser():
     parser = argparse.ArgumentParser(
         prog="python -m jobs.summarise_reports",
         description="Download the latest annual report and call transcript for the "
-        "top 20 companies, summarise each with Claude, and store the summaries.",
+        "top 20 companies, summarise each with the configured LLM, and store them.",
     )
     parser.add_argument(
         "--symbols",
@@ -99,8 +90,9 @@ def _build_parser():
     )
     parser.add_argument(
         "--check", action="store_true",
-        help="report the plan, the token count and the estimated cost, then stop. "
-        "Downloads the PDFs and reads them, but calls no model and writes no rows.",
+        help="report the plan, the character counts and which documents will be "
+        "read in parts, then stop. Downloads and reads the PDFs, but calls no "
+        "model and writes no rows.",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -109,19 +101,6 @@ def _build_parser():
     parser.add_argument(
         "--force", action="store_true",
         help="re-summarise documents already in the database",
-    )
-    parser.add_argument(
-        "--yes", action="store_true",
-        help=f"proceed without confirmation when the estimate exceeds ${CONFIRM_ABOVE_USD:.0f}",
-    )
-    parser.add_argument(
-        "--effort", default=summarise.DEFAULT_EFFORT,
-        choices=("low", "medium", "high", "xhigh", "max"),
-        help="how hard the model works on each summary (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--model", default=summarise.MODEL,
-        help="model id (default: %(default)s)",
     )
     parser.add_argument(
         "--delay", type=float, default=config.REQUEST_DELAY_SECONDS,
@@ -227,47 +206,33 @@ def _prepare(client, scrip, args, seen_checksums):
 
 # --- stage 3: cost, summarise, store ---
 
-def _estimate(anthropic_client, items, model):
-    total = 0
-    for item in items:
-        item["input_tokens"] = summarise.count_tokens(
-            anthropic_client,
-            item["text"],
-            item["report_type"],
-            item["company_name"],
-            item["report_name"],
-            item["filed_on"] or "",
-            model=model,
-        )
-        total += item["input_tokens"]
-    return total
 
 
-def _summarise_and_store(anthropic_client, items, args):
+def _summarise_and_store(items, args):
     written = {"inserted": 0, "updated": 0}
     failed = 0
-    spent_input = spent_output = 0
+    chunked = 0
 
     for item in items:
         label = f"{item['report_type']}  {item['ticker'] or item['scrip_code']:<10} {item['report_name'][:40]}"
         try:
             result = summarise.summarise(
-                anthropic_client,
                 item["text"],
                 item["report_type"],
                 item["company_name"],
                 item["report_name"],
                 item["filed_on"] or "",
-                model=args.model,
-                effort=args.effort,
+                # A document read in parts takes minutes; say so while it runs
+                # rather than appearing to hang.
+                progress=lambda note: print(f"           {note}", flush=True),
             )
         except summarise.SummaryFailed as exc:
             print(f"  FAIL  {label}: {exc}")
             failed += 1
             continue
 
-        spent_input += result["input_tokens"]
-        spent_output += result["output_tokens"]
+        if result["chunks"] > 1:
+            chunked += 1
 
         record = {key: item[key] for key in (
             "scrip_code", "ticker", "company_name", "report_name", "report_type",
@@ -283,12 +248,22 @@ def _summarise_and_store(anthropic_client, items, args):
         print(f"  {outcome[:8]:<8} {label}")
         print(f"           {first_line[:96]}")
 
-    return written, failed, spent_input, spent_output
+    return written, failed, chunked
 
 
 def main(argv=None):
     args = _build_parser().parse_args(argv)
     started = datetime.datetime.now()
+
+    # Both prerequisites are checked before any downloading. Discovering a
+    # missing key or an unreachable database after fetching twenty documents
+    # is the wrong order.
+    if not (args.check or args.dry_run):
+        try:
+            summarise.check_ready()
+        except summarise.NotConfigured as exc:
+            print(f"LLM provider: {exc}", file=sys.stderr)
+            return 2
 
     # The database is checked before any work, not after: discovering it is
     # unreachable having already spent money on the model is the wrong order.
@@ -343,42 +318,28 @@ def main(argv=None):
         print("Dry run: no model call, nothing stored.")
         return 0
 
-    try:
-        anthropic_client = summarise.build_client()
-    except summarise.CredentialsMissing as exc:
-        print(f"\nClaude API: {exc}", file=sys.stderr)
+    total_chars = sum(item["char_count"] for item in staged)
+    oversized = [item for item in staged if item["char_count"] > summarise.MAX_INPUT_CHARS]
+    print(f"  {total_chars:,} characters across {len(staged)} document(s)")
+    print(f"  model: {summarise.describe_provider()}")
+    if oversized:
         print(
-            "\nThe documents above were downloaded and read successfully; only the "
-            "summarising step needs a key. Re-run with --dry-run to stop before it.",
-            file=sys.stderr,
+            f"  {len(oversized)} of them exceed the {summarise.MAX_INPUT_CHARS:,}-character "
+            "window and will be read in parts:"
         )
-        return 2
-    print("Counting tokens...")
-    input_tokens = _estimate(anthropic_client, staged, args.model)
-    output_tokens = len(staged) * summarise.MAX_SUMMARY_TOKENS
-    estimate = _estimated_usd(input_tokens, output_tokens)
-    print(
-        f"  {input_tokens:,} input tokens across {len(staged)} document(s); "
-        f"about ${estimate:.2f} at {args.model} rates"
-    )
+        for item in oversized:
+            parts = -(-item["char_count"] // summarise.MAX_INPUT_CHARS)
+            print(
+                f"    {item['report_type']}  {item['ticker'] or item['scrip_code']:<10} "
+                f"{item['char_count']:>9,} chars -> {parts} parts"
+            )
 
     if args.check:
         print("\nCheck only: no model call, nothing stored.")
         return 0
 
-    if estimate > CONFIRM_ABOVE_USD and not args.yes:
-        print(
-            f"\nThis run would cost about ${estimate:.2f}, above the "
-            f"${CONFIRM_ABOVE_USD:.0f} threshold.\n"
-            "  Narrow it with --symbols or --count, or confirm with --yes.",
-            file=sys.stderr,
-        )
-        return 2
-
     print()
-    written, failed, spent_input, spent_output = _summarise_and_store(
-        anthropic_client, staged, args
-    )
+    written, failed, chunked = _summarise_and_store(staged, args)
 
     elapsed = (datetime.datetime.now() - started).total_seconds()
     print(f"\nSummary  ({elapsed:.0f}s)")
@@ -386,8 +347,8 @@ def main(argv=None):
     print(f"  updated    {written['updated']}")
     if failed:
         print(f"  failed     {failed}")
-    print(f"  tokens     {spent_input:,} in / {spent_output:,} out")
-    print(f"  cost       about ${_estimated_usd(spent_input, spent_output):.2f}")
+    if chunked:
+        print(f"  in parts   {chunked}")
     return 1 if failed else 0
 
 
