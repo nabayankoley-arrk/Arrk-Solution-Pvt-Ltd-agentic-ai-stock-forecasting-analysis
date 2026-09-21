@@ -12,18 +12,27 @@ Manually-run jobs. Each is a module with a `__main__` guard, run from `backend/`
 Two things must be provided. Neither is in the repository, and the job checks
 both before spending anything.
 
-**1. A Postgres database.** There was none: `backend/db/` did not exist, and the
-agent packages import a `db` module that was never committed. The schema and
-connection layer are now here. Point them at a server and create the table:
+**1. A Postgres database.** The project's `backend/db/` layer defines the
+schema and the connection; this job adds one table, `document_summaries`, to
+`db/schema.sql`. Connection details come from the environment, via
+`db/connection.py`:
 
 ```powershell
-$env:DATABASE_URL = "postgresql://user:password@localhost:5432/stockdb"
-python -m db.apply_schema --check    # what is there now
-python -m db.apply_schema            # create what is missing
+$env:DB_HOST = "localhost"; $env:DB_PORT = "5432"
+$env:DB_NAME = "stock_analysis"
+$env:DB_USER = "postgres"; $env:DB_PASSWORD = "..."
 ```
 
-`--check` reports the server, the database and every table it finds, marking
-the ones this project owns. It changes nothing.
+Or put them in `backend/.env`, which `bootstrap.py` loads. Then:
+
+```powershell
+python -m db.apply_schema --check    # what is there now
+python -m db.apply_schema            # load schema.sql
+```
+
+`--check` lists every table the project expects and marks the missing ones. It
+changes nothing. `schema.sql`'s own header gives the `psql` equivalent, which
+remains the reference way to load it.
 
 **2. An Anthropic API key.**
 
@@ -49,11 +58,16 @@ One table, `document_summaries`, defined in [db/schema.sql](../db/schema.sql).
 | `summary`, `model` | The output, and which model produced it |
 | `created_at`, `updated_at` | |
 
-`document_summaries` is the only table this work adds. The agent packages under
-`backend/agents/` expect tables of their own via
-`db.upsert.save_fundamental_analysis_results` and `save_technical_analysis_results`;
-those are **not** defined here, because their shape belongs to whoever wrote
-those agents. Guessing at them would be worse than leaving the gap visible.
+`document_summaries` is the only table this work adds; the other twelve in
+`schema.sql` belong to the agents and the chat router. The reads and writes for
+it live in [db/upsert.py](../db/upsert.py) alongside the rest
+(`save_document_summary`, `existing_document_checksums`,
+`latest_document_summary`, `report_type_for`).
+
+It deliberately has no foreign key to `universe(ticker)`. This job addresses
+companies by BSE scrip code across the top 20 by market capitalisation, which
+is not the same set as `universe`, and uses unsuffixed tickers (`INFY`) where
+`universe` holds NSE-suffixed ones (`INFY.NS`).
 
 ## Running it
 
@@ -104,7 +118,7 @@ ingestion.collect     find the latest AR and TR (BSE, company site as fallback)
 ingestion.downloader  write the PDFs, verify %PDF, record sha256
 ingestion.extract     PyMuPDF text layer
 ingestion.summarise   Claude, streamed
-db.documents          one row, keyed on sha256
+db.upsert             one row, keyed on sha256
 ```
 
 Three things make a rerun cheap. A PDF already on disk is not downloaded again;

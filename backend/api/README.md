@@ -7,24 +7,32 @@ cannot drift apart — both go through `ingestion.collect.collect()`.
 
 ## Running it
 
+These endpoints are part of the project's one FastAPI app, `backend/main.py`,
+which also serves `/api/stock-analysis`, `/api/chat` and the frontend:
+
 ```bash
 cd backend
 python -m pip install -r requirements.txt
-uvicorn api.app:app --reload
+uvicorn main:app --reload
 ```
 
 Interactive documentation at http://127.0.0.1:8000/docs.
+
+This module exposes an `APIRouter`, which `main.py` includes. It also assembles
+a standalone app for exercising these endpoints without starting the agents or
+serving the frontend -- `uvicorn api.app:app --reload`. Both expose identical
+paths, so a request written against one works unchanged against the other.
 
 ## Endpoints
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/health` | Liveness, plus the list of document types |
-| GET | `/companies?q=` | Resolve a ticker, name, ISIN or scrip code |
-| POST | `/documents` | Fetch PDFs for a list of symbols |
-| GET | `/inventory/{symbol}` | What a company publishes, by type and source |
-| GET | `/files` | Everything already downloaded, with a link to each |
-| GET | `/files/{path}` | Serve one downloaded PDF |
+| GET | `/api/document-types` | The document types these endpoints understand |
+| GET | `/api/companies?q=` | Resolve a ticker, name, ISIN or scrip code |
+| POST | `/api/documents` | Fetch PDFs for a list of symbols |
+| GET | `/api/inventory/{symbol}` | What a company publishes, by type and source |
+| GET | `/api/documents/files` | Everything already downloaded, with a link to each |
+| GET | `/api/documents/files/{path}` | Serve one downloaded PDF |
 
 ## Where the PDFs go
 
@@ -34,15 +42,15 @@ the response -- a fetch can be tens of megabytes across several symbols, and
 the caller usually wants a manifest rather than a multipart body.
 
 To get at the bytes, use the `download_url` on each document, or browse
-`GET /files`:
+`GET /api/documents/files`:
 
 ```
-GET /files
+GET /api/documents/files
   -> [{"title": "Annual Report for the year 2025-26",
-       "download_url": "/files/annual_report/532406_2026-05-30_....pdf",
+       "download_url": "/api/documents/files/annual_report/532406_2026-05-30_....pdf",
        "bytes": 16041783, "sha256": "9dfcf84c...", ...}]
 
-GET /files/annual_report/532406_2026-05-30_....pdf
+GET /api/documents/files/annual_report/532406_2026-05-30_....pdf
   -> 200 application/pdf, content-disposition: attachment
 ```
 
@@ -60,7 +68,7 @@ Symbols alone are enough. The default is the latest annual report and the
 latest earnings-call transcript, taking whichever of the two exists:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/documents \
+curl -X POST http://127.0.0.1:8000/api/documents \
      -H "Content-Type: application/json" \
      -d '{"symbols": ["INFY", "AVANTEL", "BDL"]}'
 ```
@@ -107,7 +115,7 @@ from, and a checksum to prove the local file is unaltered.
 | Field | Default | Notes |
 | --- | --- | --- |
 | `symbols` | required | Tickers, names, ISINs or scrip codes. **1 to 10 per request.** |
-| `types` | `["annual_report","transcript"]` | Or `["all"]` for every report type; see `/health` for the list |
+| `types` | `["annual_report","transcript"]` | Or `["all"]` for every report type; see `/api/document-types` for the list |
 | `latest` | `1` | N most recent **of each type**; `0` for everything in the window |
 | `years` | `1` | Lookback from today, 1–40 |
 | `source` | `auto` | `auto`, `bse`, or `site` |

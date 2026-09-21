@@ -12,7 +12,7 @@ The pipeline, per company:
         -> PDF on disk                              ingestion.downloader
         -> text                                     ingestion.extract  (PyMuPDF)
         -> short summary                            ingestion.summarise (Claude)
-        -> one row, keyed on the PDF's sha256       db.documents
+        -> one row, keyed on the PDF's sha256       db.upsert
 
 Stored as report_type "AR" for an annual report and "TR" for a transcript.
 
@@ -30,8 +30,9 @@ import argparse
 import datetime
 import sys
 
-from db import documents as store
-from db.connection import DatabaseNotConfigured, DatabaseUnavailable, get_connection
+import psycopg2
+
+from db import upsert as store
 from ingestion import collect as collector
 from ingestion import config, downloader, extract, summarise
 from ingestion.errors import ConfigurationError, IngestionError, SourceUnavailable
@@ -242,7 +243,7 @@ def _estimate(anthropic_client, items, model):
     return total
 
 
-def _summarise_and_store(anthropic_client, connection, items, args):
+def _summarise_and_store(anthropic_client, items, args):
     written = {"inserted": 0, "updated": 0}
     failed = 0
     spent_input = spent_output = 0
@@ -276,7 +277,7 @@ def _summarise_and_store(anthropic_client, connection, items, args):
         record["summary"] = result["summary"]
         record["model"] = result["model"]
 
-        outcome = store.save_summary(record, connection=connection)
+        outcome = store.save_document_summary(record)
         written[outcome] += 1
         first_line = result["summary"].splitlines()[0]
         print(f"  {outcome[:8]:<8} {label}")
@@ -291,17 +292,23 @@ def main(argv=None):
 
     # The database is checked before any work, not after: discovering it is
     # unreachable having already spent money on the model is the wrong order.
-    connection = None
     seen_checksums = set()
     if not (args.check or args.dry_run):
         try:
-            connection = get_connection()
-            seen_checksums = store.existing_checksums(connection)
-        except (DatabaseNotConfigured, DatabaseUnavailable) as exc:
-            print(f"Database: {exc}", file=sys.stderr)
+            seen_checksums = store.existing_document_checksums()
+        except psycopg2.OperationalError as exc:
+            print(f"Database unreachable: {str(exc).strip()}", file=sys.stderr)
             print(
-                "\nRun 'python -m db.apply_schema --check' to see the current state, "
-                "or --check / --dry-run here to work without a database.",
+                "\nSet DB_HOST, DB_PORT, DB_NAME, DB_USER and DB_PASSWORD, in your shell\n"
+                "or in backend/.env. Use --check or --dry-run to work without a database.",
+                file=sys.stderr,
+            )
+            return 2
+        except psycopg2.errors.UndefinedTable:
+            print("Database reachable, but document_summaries does not exist.", file=sys.stderr)
+            print(
+                "\nRun 'python -m db.apply_schema' to create it, or "
+                "'python -m db.apply_schema --check' to see what is there.",
                 file=sys.stderr,
             )
             return 2
@@ -325,28 +332,20 @@ def main(argv=None):
                     print(f"    FAIL  {str(exc)[:96]}")
     except IngestionError as exc:
         print(f"\nRun stopped: {exc}", file=sys.stderr)
-        if connection:
-            connection.close()
         return 3
 
     print(f"\nStaged {len(staged)} document(s) to summarise.")
     if not staged:
-        if connection:
-            connection.close()
         print("Nothing to do.")
         return 0
 
     if args.dry_run:
-        if connection:
-            connection.close()
         print("Dry run: no model call, nothing stored.")
         return 0
 
     try:
         anthropic_client = summarise.build_client()
     except summarise.CredentialsMissing as exc:
-        if connection:
-            connection.close()
         print(f"\nClaude API: {exc}", file=sys.stderr)
         print(
             "\nThe documents above were downloaded and read successfully; only the "
@@ -364,14 +363,10 @@ def main(argv=None):
     )
 
     if args.check:
-        if connection:
-            connection.close()
         print("\nCheck only: no model call, nothing stored.")
         return 0
 
     if estimate > CONFIRM_ABOVE_USD and not args.yes:
-        if connection:
-            connection.close()
         print(
             f"\nThis run would cost about ${estimate:.2f}, above the "
             f"${CONFIRM_ABOVE_USD:.0f} threshold.\n"
@@ -381,13 +376,9 @@ def main(argv=None):
         return 2
 
     print()
-    try:
-        written, failed, spent_input, spent_output = _summarise_and_store(
-            anthropic_client, connection, staged, args
-        )
-    finally:
-        if connection:
-            connection.close()
+    written, failed, spent_input, spent_output = _summarise_and_store(
+        anthropic_client, staged, args
+    )
 
     elapsed = (datetime.datetime.now() - started).total_seconds()
     print(f"\nSummary  ({elapsed:.0f}s)")

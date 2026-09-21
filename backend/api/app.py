@@ -29,7 +29,7 @@ import pathlib
 import urllib.parse
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import APIRouter, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -39,14 +39,11 @@ from ingestion.errors import ConfigurationError, SourceUnavailable, StorageError
 from ingestion.http import HttpClient
 from ingestion.sources import scrip_master
 
-app = FastAPI(
-    title="Stock document fetcher",
-    version="0.1.0",
-    description=(
-        "Downloads corporate filing PDFs from BSE, falling back to a company's "
-        "own website for document types BSE does not carry."
-    ),
-)
+# A router, not an app: backend/main.py is this project's single FastAPI
+# entry point and includes this alongside /api/stock-analysis and /api/chat,
+# so there is one process and one origin. A standalone app is still assembled
+# at the bottom of this file for exercising these endpoints on their own.
+router = APIRouter(prefix="/api", tags=["documents"])
 
 
 # --- request and response shapes ---
@@ -283,7 +280,7 @@ def _download_url(relative_path):
     """A URL the caller can open, or None when the file is not on disk yet."""
     if not relative_path:
         return None
-    return "/files/" + urllib.parse.quote(relative_path)
+    return "/api/documents/files/" + urllib.parse.quote(relative_path)
 
 
 def _served_root():
@@ -299,12 +296,13 @@ def _served_root():
 
 # --- routes ---
 
-@app.get("/health")
-def health():
+@router.get("/document-types")
+def document_types():
+    """The document types these endpoints understand."""
     return {"status": "ok", "document_types": list(taxonomy.DOCUMENT_TYPES)}
 
 
-@app.get("/companies", response_model=List[CompanyOut])
+@router.get("/companies", response_model=List[CompanyOut])
 def companies(
     q: str = Query(..., min_length=1, description="Ticker, name, ISIN or scrip code."),
     limit: int = Query(25, ge=1, le=200),
@@ -318,7 +316,7 @@ def companies(
     return [CompanyOut(**entry) for entry in scrip_master.search(entries, q)[:limit]]
 
 
-@app.post("/documents", response_model=FetchResponse)
+@router.post("/documents", response_model=FetchResponse)
 def fetch_documents(request: FetchRequest):
     """Fetch PDFs for a list of symbols.
 
@@ -353,7 +351,7 @@ def fetch_documents(request: FetchRequest):
     )
 
 
-@app.get("/inventory/{symbol}", response_model=InventoryResponse)
+@router.get("/inventory/{symbol}", response_model=InventoryResponse)
 def inventory(
     symbol: str,
     years: int = Query(1, ge=1, le=40),
@@ -389,7 +387,7 @@ def inventory(
     )
 
 
-@app.get("/files", response_model=List[DocumentOut])
+@router.get("/documents/files", response_model=List[DocumentOut])
 def list_files():
     """Every document already on disk, from the manifest.
 
@@ -415,7 +413,7 @@ def list_files():
     ]
 
 
-@app.get("/files/{path:path}")
+@router.get("/documents/files/{path:path}")
 def get_file(path: str):
     """Serve one downloaded PDF.
 
@@ -434,3 +432,22 @@ def get_file(path: str):
         raise HTTPException(status_code=404, detail=f"no such file: {path}")
 
     return FileResponse(target, media_type="application/pdf", filename=target.name)
+
+
+# Standalone app, for exercising these endpoints without starting the agents
+# or serving the frontend:
+#
+#     uvicorn api.app:app --reload
+#
+# The project's real entry point is backend/main.py, which includes the same
+# router. Both expose identical paths, so a request written against one works
+# unchanged against the other.
+app = FastAPI(
+    title="Stock document fetcher",
+    version="0.2.0",
+    description=(
+        "Downloads corporate filing PDFs from BSE, falling back to a company's "
+        "own website for document types BSE does not carry."
+    ),
+)
+app.include_router(router)

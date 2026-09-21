@@ -1038,7 +1038,7 @@ def test_extract_helpers():
 
 def test_report_type_abbreviations():
     print("\n--- AR / TR abbreviations ---")
-    from db import documents as store
+    from db import upsert as store
 
     check("an annual report is AR", store.report_type_for(["annual_report"]) == "AR")
     check("a transcript is TR", store.report_type_for(["transcript"]) == "TR")

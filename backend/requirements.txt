@@ -1,17 +1,13 @@
-# Third-party packages imported by backend/. Pinned loosely: the project has
-# no lockfile yet, and none of these are used near their API edges.
-
-# agents/ -- LangGraph state machines and their Postgres access
-langgraph
-psycopg2-binary
-
-# ingestion -- BSE and company-website document fetcher
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+langgraph>=0.1
+yfinance>=0.2.40
 requests>=2.31
-
-# api -- HTTP layer over ingestion (api/app.py)
-fastapi
-uvicorn
+psycopg2-binary>=2.9
+python-dotenv>=1.0
+truststore>=0.9
 
 # jobs/ -- PDF text extraction and Claude summarisation
-pymupdf
-anthropic
+pymupdf>=1.24
+anthropic>=1.0
