@@ -1,7 +1,7 @@
 """Process-wide runtime setup, imported for its side effects.
 
-Two things every entry point into this backend needs before anything else
-reads os.environ or opens an HTTPS connection:
+Three things every entry point into this backend needs before anything else
+reads os.environ, prints, or opens an HTTPS connection:
 
 1. `backend/.env` is loaded into os.environ, which is what db/connection.py's
    own docstring already tells you to use. Each config.py reads its settings
@@ -22,13 +22,14 @@ reads os.environ or opens an HTTPS connection:
    changes *which* trust anchors are used, never whether certificates are
    checked. Note it applies process-wide, not just to this project's calls.
 
-Both steps are idempotent and safe to import repeatedly. Neither raises if
+All three steps are idempotent and safe to import repeatedly. Neither raises if
 its dependency is missing: a deployment that sets real environment variables
 needs no .env, and a network without TLS inspection needs no truststore, so
 an ImportError for either is not fatal.
 """
 
 import os
+import sys
 
 _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 _ENV_PATH = os.path.join(_BACKEND_DIR, ".env")
@@ -60,6 +61,27 @@ def setup():
         truststore.inject_into_ssl()
     except ImportError:
         pass
+
+    # 3. stdout/stderr are switched to UTF-8.
+    #
+    # A Windows console defaults to cp1252, which cannot encode the rupee sign
+    # -- so printing anything derived from an Indian filing raises
+    # UnicodeEncodeError and kills the process. That is not hypothetical: the
+    # debug trace in agents/orchestrator/llm_client.py prints 300 characters of
+    # every model reply, and a reply about an Indian company quoting figures in
+    # rupees crashes it. So does any summary or chat response echoed to a
+    # terminal. errors="replace" rather than "strict" so that a stray character
+    # from some other script degrades to "?" instead of taking the run down.
+    #
+    # Only affects this process's own streams; it changes nothing about how
+    # text is stored or sent over the wire.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            # Not a TextIOWrapper -- redirected to a pipe or captured by a
+            # test harness. Those are already byte-oriented or UTF-8.
+            pass
 
     # truststore only patches Python's own `ssl` module, so it covers
     # `requests` but NOT yfinance: yfinance >= 1.x fetches through curl_cffi,
