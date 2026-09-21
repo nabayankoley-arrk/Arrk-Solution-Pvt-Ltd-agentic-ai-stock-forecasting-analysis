@@ -18,6 +18,9 @@ the stored row records the character count it was built from.
 
 import os
 import re
+import time
+
+import requests
 
 from agents.orchestrator import config as llm_config
 from agents.orchestrator.llm_client import LLMAgentError, call_llm_chat
@@ -32,6 +35,15 @@ MAX_INPUT_CHARS = int(os.environ.get("SUMMARY_MAX_INPUT_CHARS", "800000"))
 # A 200,000-word prompt takes minutes, not seconds. The orchestrator's own
 # 60-second default is sized for a small JSON decision and is far too short.
 TIMEOUT_SECONDS = int(os.environ.get("SUMMARY_TIMEOUT_SECONDS", "600"))
+
+# A free-tier key rate-limits per minute, and this job makes tens of calls in
+# a row, so 429 is expected rather than exceptional -- wait and ask again.
+# 5xx is included because a gateway hiccup is equally worth one more try;
+# 4xx other than 429 (bad key, bad model id) never improves by waiting.
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+MAX_ATTEMPTS = int(os.environ.get("SUMMARY_MAX_ATTEMPTS", "5"))
+RETRY_BASE_SECONDS = 20.0   # free limits reset per minute, so start there
+RETRY_CEILING_SECONDS = 120.0
 
 DOCUMENT_LABELS = {
     "AR": "annual report",
@@ -158,16 +170,62 @@ def split(text, limit=None):
     return pieces
 
 
-def _ask(system_prompt, user_prompt):
-    try:
-        reply = call_llm_chat(system_prompt, user_prompt, timeout=TIMEOUT_SECONDS)
-    except LLMAgentError as exc:
-        raise NotConfigured(str(exc)) from exc
-    except Exception as exc:  # requests' network and HTTP errors
-        raise SummaryFailed(f"{type(exc).__name__}: {str(exc)[:200]}") from exc
-    if not (reply or "").strip():
-        raise SummaryFailed("the model returned an empty reply")
-    return reply.strip()
+def _retry_after(exc, attempt):
+    """Seconds to wait before retrying, honouring Retry-After when sent."""
+    response = getattr(exc, "response", None)
+    header = (response.headers.get("Retry-After") if response is not None else None)
+    if header:
+        try:
+            return min(float(header), RETRY_CEILING_SECONDS)
+        except ValueError:
+            pass
+    return min(RETRY_BASE_SECONDS * (2 ** attempt), RETRY_CEILING_SECONDS)
+
+
+def _ask(system_prompt, user_prompt, progress=None):
+    """One model call, retrying the failures that are worth retrying.
+
+    call_llm_chat has no retry of its own -- it was written for a single small
+    decision per request, where one failure just falls back to a rule. This job
+    makes tens of calls in a row, and a free-tier key rate-limits well before
+    it finishes: a real run summarised a 384-page report in two parts and then
+    lost the next document to a 429, seconds later. Waiting and asking again is
+    the whole fix.
+    """
+    last = None
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            reply = call_llm_chat(system_prompt, user_prompt, timeout=TIMEOUT_SECONDS)
+        except LLMAgentError as exc:
+            # A missing key never becomes valid by waiting.
+            raise NotConfigured(str(exc)) from exc
+        except requests.HTTPError as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status not in RETRY_STATUSES or attempt == MAX_ATTEMPTS - 1:
+                raise SummaryFailed(f"HTTP {status}: {str(exc)[:160]}") from exc
+            wait = _retry_after(exc, attempt)
+            if progress:
+                progress(f"  HTTP {status}, waiting {wait:.0f}s (attempt {attempt + 2} of {MAX_ATTEMPTS})")
+            time.sleep(wait)
+            last = exc
+            continue
+        except requests.RequestException as exc:
+            if attempt == MAX_ATTEMPTS - 1:
+                raise SummaryFailed(f"{type(exc).__name__}: {str(exc)[:160]}") from exc
+            wait = _retry_after(exc, attempt)
+            if progress:
+                progress(f"  {type(exc).__name__}, waiting {wait:.0f}s")
+            time.sleep(wait)
+            last = exc
+            continue
+        except Exception as exc:
+            raise SummaryFailed(f"{type(exc).__name__}: {str(exc)[:200]}") from exc
+
+        if not (reply or "").strip():
+            raise SummaryFailed("the model returned an empty reply")
+        return reply.strip()
+
+    raise SummaryFailed(f"gave up after {MAX_ATTEMPTS} attempts: {str(last)[:160]}")
 
 
 def summarise(text, report_type, company, title, filed_on="", progress=None):
@@ -182,7 +240,7 @@ def summarise(text, report_type, company, title, filed_on="", progress=None):
     parts = split(text)
 
     if len(parts) == 1:
-        summary = _ask(SYSTEM, f"{header}\n\n---\n\n{text}")
+        summary = _ask(SYSTEM, f"{header}\n\n---\n\n{text}", progress)
     else:
         if progress:
             progress(f"{len(text):,} characters: reading in {len(parts)} parts")
@@ -193,6 +251,7 @@ def summarise(text, report_type, company, title, filed_on="", progress=None):
             note = _ask(
                 SYSTEM_PARTIAL,
                 f"{header}\nSection {index} of {len(parts)}\n\n---\n\n{part}",
+                progress,
             )
             if note.upper().startswith(_NOTHING):
                 continue
@@ -205,7 +264,9 @@ def summarise(text, report_type, company, title, filed_on="", progress=None):
             )
         if progress:
             progress(f"  combining {len(notes)} set(s) of notes")
-        summary = _ask(SYSTEM_COMBINE, f"{header}\n\n---\n\n" + "\n\n".join(notes))
+        summary = _ask(
+            SYSTEM_COMBINE, f"{header}\n\n---\n\n" + "\n\n".join(notes), progress
+        )
 
     return {
         "summary": summary,

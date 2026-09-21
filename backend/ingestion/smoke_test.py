@@ -1134,6 +1134,67 @@ def test_summarise_paths():
         summarise.MAX_INPUT_CHARS = original_limit
 
 
+def _http_error(status, retry_after=None):
+    import requests
+    response = requests.Response()
+    response.status_code = status
+    if retry_after:
+        response.headers["Retry-After"] = retry_after
+    return requests.HTTPError(f"{status} Error", response=response)
+
+
+def test_retry():
+    print("\n--- retrying a rate-limited call ---")
+    original = summarise.call_llm_chat
+    base, ceiling = summarise.RETRY_BASE_SECONDS, summarise.RETRY_CEILING_SECONDS
+    summarise.RETRY_BASE_SECONDS = summarise.RETRY_CEILING_SECONDS = 0.01
+    attempts = {"n": 0}
+
+    try:
+        def flaky(system_prompt, user_prompt, timeout=None):
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                raise _http_error(429)
+            return "summary text"
+
+        summarise.call_llm_chat = flaky
+        notes = []
+        result = summarise.summarise("doc", "TR", "Co", "T", progress=notes.append)
+        check("a 429 is waited out, not given up on", result["summary"] == "summary text")
+        check("it took the retries", attempts["n"] == 3, str(attempts["n"]))
+        check("the wait is reported rather than looking hung", any("429" in n for n in notes))
+
+        summarise.call_llm_chat = lambda *a, **k: (_ for _ in ()).throw(_http_error(429))
+        check_raises(
+            "but it does give up eventually",
+            summarise.SummaryFailed,
+            lambda: summarise.summarise("doc", "TR", "Co", "T"),
+        )
+
+        # A bad key or model id never improves by waiting, so it must not retry.
+        attempts["n"] = 0
+
+        def rejected(system_prompt, user_prompt, timeout=None):
+            attempts["n"] += 1
+            raise _http_error(400)
+
+        summarise.call_llm_chat = rejected
+        check_raises(
+            "a 400 fails at once",
+            summarise.SummaryFailed,
+            lambda: summarise.summarise("doc", "TR", "Co", "T"),
+        )
+        check("and is tried only once", attempts["n"] == 1, str(attempts["n"]))
+
+        check(
+            "a Retry-After header wins over the backoff",
+            summarise._retry_after(_http_error(429, "0.005"), 3) == 0.005,
+        )
+    finally:
+        summarise.call_llm_chat = original
+        summarise.RETRY_BASE_SECONDS, summarise.RETRY_CEILING_SECONDS = base, ceiling
+
+
 if __name__ == "__main__":
     test_classification()
     test_type_vetoes()
@@ -1161,6 +1222,7 @@ if __name__ == "__main__":
     test_report_type_abbreviations()
     test_split()
     test_summarise_paths()
+    test_retry()
 
     print()
     if failures:
