@@ -35,6 +35,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agents.chat_intent_routing.graph import build_graph as build_chat_intent_routing_graph
+from api.app import router as documents_router
 
 app = FastAPI(title="Agentic AI Stock Analysis API")
 
@@ -292,6 +293,14 @@ def run_chat(request: ChatRequest):
         session_id=session_id,
         ticker=result.get("resolved_ticker"),
     )
+
+
+# Document fetching and summarisation: /api/companies, /api/documents,
+# /api/inventory/{symbol}, /api/documents/files. Included before the mount
+# below for the same reason the routes above are declared before it --
+# Starlette matches in registration order, and the catch-all would
+# otherwise swallow them.
+app.include_router(documents_router)
 
 
 # Serves frontend/index.html (a minimal, dependency-free chat page against
