@@ -35,6 +35,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agents.chat_intent_routing.graph import build_graph as build_chat_intent_routing_graph
+from api.app import router as documents_router
 
 app = FastAPI(title="Agentic AI Stock Analysis API")
 

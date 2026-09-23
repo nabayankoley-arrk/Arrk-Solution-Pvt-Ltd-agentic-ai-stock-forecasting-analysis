@@ -277,3 +277,53 @@ CREATE TABLE IF NOT EXISTS "Memory".conversation_history (
 );
 CREATE INDEX IF NOT EXISTS idx_conversation_history_user_created
     ON "Memory".conversation_history (user_id, created_at DESC);
+
+-- ============================================================================
+-- document_summaries -- one row per filing PDF that backend/jobs/
+-- summarise_reports.py has downloaded, read and summarised. Not from any
+-- specification document: it is defined by that job, which is the only code
+-- that writes it.
+--
+-- report_type is the abbreviation the job stores:
+--     AR  annual report
+--     TR  transcript report (earnings or AGM call)
+-- CHECK-constrained rather than free text so a typo fails at write time
+-- instead of quietly creating a third category nobody queries for.
+--
+-- Keyed on sha256 of the PDF bytes rather than on (ticker, date). Identical
+-- bytes mean the identical document whichever feed served it, and BSE does
+-- serve the same report twice under different attachment ids -- that is what
+-- makes the job safe to re-run without accumulating duplicates.
+--
+-- Deliberately no FK to universe(ticker). This job addresses companies by BSE
+-- scrip code and covers the top 20 by market capitalisation, which is not the
+-- same set as universe, and whose tickers here are unsuffixed ("INFY") where
+-- universe holds NSE-suffixed ones ("INFY.NS"). An FK would reject rows for
+-- companies the rest of the pipeline has not seeded yet.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS document_summaries (
+    id            BIGSERIAL PRIMARY KEY,
+    scrip_code    VARCHAR(20) NOT NULL,   -- BSE numeric code, the stable key
+    ticker        VARCHAR(20),
+    company_name  VARCHAR(255),
+    report_name   TEXT NOT NULL,          -- the document's title as filed
+    report_type   VARCHAR(2) NOT NULL CHECK (report_type IN ('AR', 'TR')),
+    filed_on      DATE,
+    source        VARCHAR(20),            -- 'bse' | 'company_site'
+    source_url    TEXT,
+    local_path    TEXT,
+    sha256        CHAR(64) NOT NULL UNIQUE,
+    page_count    INTEGER,                -- what the model was actually given:
+    char_count    INTEGER,                -- a 200-page report reduced from 1.2M
+                                          -- characters is a different artefact
+                                          -- from one built on 40,000
+    summary       TEXT NOT NULL,
+    model         VARCHAR(60),
+    created_at    TIMESTAMP DEFAULT NOW(),
+    updated_at    TIMESTAMP DEFAULT NOW()
+);
+-- The query the analysis agents will run: latest AR or TR for one company.
+CREATE INDEX IF NOT EXISTS idx_document_summaries_lookup
+    ON document_summaries (scrip_code, report_type, filed_on DESC);
+CREATE INDEX IF NOT EXISTS idx_document_summaries_ticker
+    ON document_summaries (ticker);

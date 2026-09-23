@@ -220,3 +220,6 @@ __marimo__/
 # Machine-specific CA bundle exported from the local OS trust store
 # (see backend/bootstrap.py) -- never commit; regenerate per machine.
 backend/certs/
+
+# BSE scrip list cache written by backend/ingestion/sources/scrip_master.py
+.ingestion-cache/

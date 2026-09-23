@@ -314,3 +314,100 @@ def save_user_memory(user_id, memory):
             """,
             (user_id, Json(memory.get("watchlist")), Json(memory.get("preferences"))),
         )
+
+
+# --- document_summaries -------------------------------------------------
+# Written by backend/jobs/summarise_reports.py. Unlike the functions above,
+# these take no Json() columns: a summary is text, and the provenance fields
+# are scalars.
+
+# The abbreviations stored in document_summaries.report_type, matching that
+# table's CHECK constraint.
+REPORT_TYPES = {
+    "annual_report": "AR",
+    "transcript": "TR",
+}
+
+
+def report_type_for(doc_types):
+    """AR or TR for a document's classified types, or None if it is neither.
+
+    Annual report wins when a document is both -- companies file a combined
+    report-and-AGM-notice PDF, and that is an annual report.
+    """
+    for doc_type in ("annual_report", "transcript"):
+        if doc_type in (doc_types or []):
+            return REPORT_TYPES[doc_type]
+    return None
+
+
+def save_document_summary(record):
+    """Writes one summary, returning "inserted" or "updated".
+
+    Keyed on the PDF's sha256, so re-running the job over documents it has
+    already seen refreshes those rows rather than accumulating duplicates.
+    """
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO document_summaries (
+                scrip_code, ticker, company_name, report_name, report_type,
+                filed_on, source, source_url, local_path, sha256,
+                page_count, char_count, summary, model
+            ) VALUES (
+                %(scrip_code)s, %(ticker)s, %(company_name)s, %(report_name)s,
+                %(report_type)s, %(filed_on)s, %(source)s, %(source_url)s,
+                %(local_path)s, %(sha256)s, %(page_count)s, %(char_count)s,
+                %(summary)s, %(model)s
+            )
+            ON CONFLICT (sha256) DO UPDATE SET
+                scrip_code = EXCLUDED.scrip_code,
+                ticker = EXCLUDED.ticker,
+                company_name = EXCLUDED.company_name,
+                report_name = EXCLUDED.report_name,
+                report_type = EXCLUDED.report_type,
+                filed_on = EXCLUDED.filed_on,
+                source = EXCLUDED.source,
+                source_url = EXCLUDED.source_url,
+                local_path = EXCLUDED.local_path,
+                page_count = EXCLUDED.page_count,
+                char_count = EXCLUDED.char_count,
+                summary = EXCLUDED.summary,
+                model = EXCLUDED.model,
+                updated_at = NOW()
+            RETURNING (xmax = 0) AS inserted
+            """,
+            record,
+        )
+        return "inserted" if cur.fetchone()[0] else "updated"
+
+
+def existing_document_checksums():
+    """Every sha256 already summarised, so a rerun can skip the model call.
+
+    The expensive part of that job is the model, not the download, so this is
+    what makes re-running it cheap.
+    """
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT sha256 FROM document_summaries")
+        return {row[0] for row in cur.fetchall()}
+
+
+def latest_document_summary(scrip_code, report_type):
+    """The most recent stored summary of one type for one company, or None."""
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT report_name, filed_on, summary, source_url, model, created_at
+            FROM document_summaries
+            WHERE scrip_code = %s AND report_type = %s
+            ORDER BY filed_on DESC NULLS LAST, created_at DESC
+            LIMIT 1
+            """,
+            (str(scrip_code), report_type),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    keys = ("report_name", "filed_on", "summary", "source_url", "model", "created_at")
+    return dict(zip(keys, row))
