@@ -4,36 +4,34 @@ Dispatches to whichever pillar rerun tool reconcile_and_decide (or a
 reviewer, via request_human_review) selected, bounded by
 TOOL_CALL_TIMEOUT_SECONDS, and folds the refreshed pillar result back into
 state before control returns to reconcile_and_decide. The tools
-(rerun_technical/rerun_fundamental) are plain functions dispatched from a
-dict here rather than separate LangGraph nodes -- the specification frames
-the selected_tool -> tool dispatch as internal branching within one "Tool
-Execution" step, not as more graph nodes.
+(rerun_technical/rerun_fundamental/rerun_sentiment) are plain functions
+dispatched from a dict here rather than separate LangGraph nodes -- the
+specification frames the selected_tool -> tool dispatch as internal
+branching within one "Tool Execution" step, not as more graph nodes.
 
-rerun_sentiment has no entry here -- deliberately, same reasoning as
-config.ENABLED_RERUN_TOOLS excluding it: run_sentiment is a fixed stub
-that can never return anything but pillar_status="unavailable", so
-rerunning it can never help. Keeping it out of this dispatch table too
-(not just out of ENABLED_RERUN_TOOLS) means even a human reviewer manually
-requesting "rerun_sentiment" via request_human_review's resume payload
-gets the same clean "unknown or disabled rerun tool" error below, instead
-of a no-op tool call. Add it back to both places once a real Sentiment
-Analysis subgraph exists.
+rerun_sentiment re-invokes the same agents/sentiment_analysis subgraph
+run_sentiment already calls for the baseline fetch -- a genuine rerun,
+unlike the retired stub this replaced (see git history / that module's
+own docstring), since a second pass can pick up a document ingested since
+the baseline fetch ran, or a cache-miss score that RESCORE_ON_CACHE_MISS
+computed and stored on the first pass.
 
 Dispatch tuple is (pillar_status_key, state_field, runner) -- kept
 separate because pillar_status/errors are always keyed by the bare pillar
-name (technical/fundamental) while the state field storing the actual
-result is "{pillar}_analysis" (see state.py).
+name (technical/fundamental/sentiment) while the state field storing the
+actual result is "{pillar}_analysis" (see state.py).
 """
 
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
 from .. import config
-from ._pillar_runners import run_fundamental, run_technical
+from ._pillar_runners import run_fundamental, run_sentiment, run_technical
 
 _TOOL_DISPATCH = {
     "rerun_technical": ("technical", "technical_analysis", run_technical),
     "rerun_fundamental": ("fundamental", "fundamental_analysis", run_fundamental),
+    "rerun_sentiment": ("sentiment", "sentiment_analysis", run_sentiment),
 }
 
 

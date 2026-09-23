@@ -67,7 +67,9 @@ HORIZON_TO_PILLAR_PARAMS = {
 
 MAX_TOOL_LOOPS = _env_int("MAX_TOOL_LOOPS", 3)
 
-ENABLED_RERUN_TOOLS = _env_tuple("ENABLED_RERUN_TOOLS", ("rerun_technical", "rerun_fundamental"))
+ENABLED_RERUN_TOOLS = _env_tuple(
+    "ENABLED_RERUN_TOOLS", ("rerun_technical", "rerun_fundamental", "rerun_sentiment")
+)
 
 # --- execute_tool_call ---
 TOOL_CALL_TIMEOUT_SECONDS = _env_int("TOOL_CALL_TIMEOUT_SECONDS", 30)
@@ -80,7 +82,7 @@ OLLAMA_TIMEOUT_SECONDS = _env_int("OLLAMA_TIMEOUT_SECONDS", 120)
 
 OPENROUTER_BASE_URL = _env_str("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")  # required only when LLM_PROVIDER=openrouter
-OPENROUTER_MODEL = _env_str("OPENROUTER_MODEL", "amazon/nova-2-lite-v1")
+OPENROUTER_MODEL = _env_str("OPENROUTER_MODEL", "inclusionai/ling-3.0-flash-fin:free")
 OPENROUTER_TIMEOUT_SECONDS = _env_int("OPENROUTER_TIMEOUT_SECONDS", 60)
 
 # OpenRouter is the hard default; set LLM_PROVIDER=ollama in the environment
