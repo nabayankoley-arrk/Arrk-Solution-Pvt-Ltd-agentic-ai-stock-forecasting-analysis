@@ -327,3 +327,21 @@ CREATE INDEX IF NOT EXISTS idx_document_summaries_lookup
     ON document_summaries (scrip_code, report_type, filed_on DESC);
 CREATE INDEX IF NOT EXISTS idx_document_summaries_ticker
     ON document_summaries (ticker);
+
+-- Sentiment scoring cache. agents/sentiment_analysis scores a summary once
+-- with the LLM and stores the verdict back on the row, so a later request for
+-- the same document is served from here instead of paying for the call again
+-- (see db/upsert.py's save_document_sentiment, and _score_helpers.py's
+-- "cached"/"scored" source field). Separate ALTERs rather than columns in the
+-- CREATE TABLE above: document_summaries predates this, and
+-- CREATE TABLE IF NOT EXISTS leaves an existing table untouched.
+ALTER TABLE document_summaries ADD COLUMN IF NOT EXISTS sentiment_label      VARCHAR(20);
+ALTER TABLE document_summaries ADD COLUMN IF NOT EXISTS sentiment_rationale  TEXT;
+ALTER TABLE document_summaries ADD COLUMN IF NOT EXISTS sentiment_model      VARCHAR(60);
+ALTER TABLE document_summaries ADD COLUMN IF NOT EXISTS sentiment_scored_at  TIMESTAMP;
+
+-- The agents look documents up by unsuffixed BSE ticker, not scrip_code (see
+-- agents/sentiment_analysis/nodes/_fetch_helpers.py) -- the lookup index above
+-- is keyed on scrip_code and cannot serve that.
+CREATE INDEX IF NOT EXISTS idx_document_summaries_ticker_lookup
+    ON document_summaries (ticker, report_type, filed_on DESC);

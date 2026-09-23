@@ -46,6 +46,11 @@ after a key's spend limit is exhausted.
 pip install -r backend/requirements.txt
 ```
 
+Re-run this after pulling any merge that touches `requirements.txt` -- a new
+dependency (e.g. `pymupdf`, added for the sentiment/ingestion jobs) otherwise
+surfaces later as a `ModuleNotFoundError` deep in an import chain rather than
+anything that points back at this file.
+
 ### 4. On a network that inspects TLS
 
 Skip unless outbound calls fail with `self-signed certificate in certificate
@@ -134,3 +139,84 @@ The technical pillar computes every indicator from it and treats fewer than
 Orchestrator takes the latest close as Fundamental Analysis's `current_price` —
 without which `relative_valuation` and `analyst_consensus` both report
 "insufficient data" however complete the filings are.
+
+### Sentiment
+
+The Sentiment Analysis subgraph reads `document_summaries`, populated by
+`backend/jobs/summarise_reports.py` from filings that `backend/ingestion`
+downloads. Without it the sentiment pillar returns "unavailable" (no
+transcript or annual-report data) and analysis falls back to the technical and
+fundamental pillars alone — this is expected on an unseeded database, not a
+bug.
+
+From `backend/`:
+
+```bash
+python -m jobs.summarise_reports --check   # what would happen, no downloads
+python -m jobs.summarise_reports           # the real run, top 20 by market cap
+```
+
+Needs the same Postgres connection as everything else above, plus an LLM key
+in `backend/.env` (the job reuses `agents/orchestrator/llm_client`) — see
+`backend/jobs/README.md` for the full prerequisites, table layout, and how it
+handles annual reports too large for one model call.
+
+It addresses companies by **unsuffixed BSE ticker** (`TCS`), while the rest of
+the system uses the NSE suffix (`TCS.NS`); `document_summaries` has no foreign
+key to `universe` for that reason. It downloads PDFs from BSE and makes one LLM
+call per document, so expect it to be slow on a first run, and to hit the same
+transient rate limits noted under Fundamentals above.
+
+## Running the API
+
+Start Postgres if it isn't already up (a no-op if it is):
+
+```bash
+docker start stock-analysis-pg
+```
+
+Then, from `backend/`:
+
+```bash
+python -m uvicorn main:app --reload
+```
+
+Two things that must hold:
+
+- **Run it from `backend/`.** `main.py` imports `from db.connection import ...`
+  and `from agents...`, which resolve relative to that directory. From the repo
+  root uvicorn reports `Could not import module "main"`.
+- **`python -m uvicorn`, not `uvicorn`** — the `uvicorn.exe` shim is not on PATH
+  by default on Windows.
+
+Serves the frontend at <http://127.0.0.1:8000/> and Swagger at `/docs`.
+
+### Endpoints
+
+`POST /api/chat` — free-text. Only `message` is required, but **pass `user_id`
+for memory to work at all**: the watchlist and conversation history are keyed on
+it, and every memory node silently no-ops without one. `session_id` tags rows
+but scopes nothing.
+
+```json
+{"user_id": "your-name", "message": "how is TCS.NS looking today?"}
+```
+
+A follow-up resolves the ticker from the watchlist, but only if it contains one
+of `config.STOCK_KEYWORDS` — intent is classified before memory is consulted, so
+a keyword-free follow-up is ruled out of scope and never reaches the lookup:
+
+```json
+{"user_id": "your-name", "message": "what is the latest forecast?"}
+```
+
+`POST /api/stock-analysis` — structured; `stock_name` is the only required
+field. Supply `forecast_days` for an LLM-reasoned price range (a qualitative
+estimate over existing pillar signals, not a trained forecasting model — it
+carries a disclaimer, and returns `unavailable` rather than inventing a number
+when the LLM can't be reached). `/api/chat` never sets `forecast_days`, so chat
+replies contain no forecast.
+
+```json
+{"stock_name": "TCS.NS", "horizon": "medium_term", "forecast_days": 30}
+```

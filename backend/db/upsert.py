@@ -411,3 +411,76 @@ def latest_document_summary(scrip_code, report_type):
         return None
     keys = ("report_name", "filed_on", "summary", "source_url", "model", "created_at")
     return dict(zip(keys, row))
+
+
+_DOCUMENT_SUMMARY_BY_TICKER_COLUMNS = (
+    "report_name",
+    "filed_on",
+    "summary",
+    "source_url",
+    "sha256",
+    "model",
+    "created_at",
+    "sentiment_label",
+    "sentiment_rationale",
+)
+
+
+def latest_document_summary_by_ticker(ticker, report_type):
+    """The most recent stored summary of one type for one company, looked up
+    by unsuffixed BSE ticker ("INFY") rather than scrip_code.
+
+    latest_document_summary() above answers the same question keyed on
+    scrip_code, which is what jobs/summarise_reports.py writes and the stable
+    identifier of the two. The analysis side does not have it: the
+    Orchestrator carries an NSE-suffixed ticker, which
+    agents/sentiment_analysis/nodes/_fetch_helpers.py strips to the BSE form
+    before calling this. Hence two lookups over one table rather than making
+    either caller translate between registries.
+
+    Returns a dict, or None when nothing is stored. `sentiment_label` and
+    `sentiment_rationale` come back so _score_helpers.py can serve a cached
+    verdict without a second query; both are NULL until save_document_sentiment
+    fills them in.
+    """
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT {", ".join(_DOCUMENT_SUMMARY_BY_TICKER_COLUMNS)}
+            FROM document_summaries
+            WHERE upper(ticker) = upper(%s) AND report_type = %s
+            ORDER BY filed_on DESC NULLS LAST, created_at DESC
+            LIMIT 1
+            """,
+            (ticker, report_type),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return dict(zip(_DOCUMENT_SUMMARY_BY_TICKER_COLUMNS, row))
+
+
+def save_document_sentiment(sha256, label, rationale, model):
+    """Caches one document's LLM sentiment verdict back onto its own row, so
+    the next request for it is served without paying for the call again (see
+    agents/sentiment_analysis/nodes/_score_helpers.py, which calls this
+    best-effort and still returns the score if it fails).
+
+    Keyed on sha256 -- document_summaries' natural key for a specific PDF, and
+    UNIQUE -- so re-summarising the same file overwrites rather than
+    duplicating. A sha256 with no matching row updates nothing and raises
+    nothing; the caller has the score either way.
+    """
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE document_summaries
+            SET sentiment_label = %s,
+                sentiment_rationale = %s,
+                sentiment_model = %s,
+                sentiment_scored_at = NOW(),
+                updated_at = NOW()
+            WHERE sha256 = %s
+            """,
+            (label, rationale, model, sha256),
+        )
