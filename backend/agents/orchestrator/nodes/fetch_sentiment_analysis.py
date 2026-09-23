@@ -1,10 +1,11 @@
 """fetch_sentiment_analysis — baseline analysis node.
 
-Sentiment Analysis is treated as a baseline interface, not yet a real
-subgraph (see the specification's Architecture section). This exposes the
-agreed (result, pillar_status, errors) shape without changing the
-orchestrator's state contract, so wiring in the real subgraph later only
-touches _pillar_runners.run_sentiment.
+Invokes the real agents/sentiment_analysis subgraph (transcript + annual
+report sources -- see that package's own docstring) via
+_pillar_runners.run_sentiment, exposing the same (result, pillar_status,
+errors) shape fetch_technical_analysis/fetch_fundamental_analysis already
+use. Kept as a thin wrapper deliberately: this node never changes when
+the subgraph behind run_sentiment does.
 """
 
 from ._pillar_runners import run_sentiment

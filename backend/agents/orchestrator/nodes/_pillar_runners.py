@@ -14,12 +14,14 @@ override dict (empty for a baseline fetch) and returns
 """
 
 from agents.fundamental_analysis.graph import build_graph as build_fundamental_graph
+from agents.sentiment_analysis.graph import build_graph as build_sentiment_graph
 from agents.technical_analysis.graph import build_graph as build_technical_graph
 
 from ._current_price import get_current_price
 
 _technical_graph = build_technical_graph()
 _fundamental_graph = build_fundamental_graph()
+_sentiment_graph = build_sentiment_graph()
 
 
 def run_technical(state, tool_call_args=None):
@@ -72,19 +74,21 @@ def run_fundamental(state, tool_call_args=None):
 
 
 def run_sentiment(state, tool_call_args=None):
-    """Sentiment Analysis has no subgraph yet (see the specification's
-    Architecture section: "treated as a baseline interface that can be
-    connected when its implementation is available"). Kept behind the
-    same (result, status, error) interface as run_technical/
-    run_fundamental so wiring in the real subgraph later is a one-line
-    change here, not a change to fetch_sentiment_analysis.py,
-    execute_tool_call.py, or the orchestrator's state contract.
-    """
-    final_output = {
-        "ticker": state.get("ticker"),
-        "as_of_date": None,
-        "direction": None,
-        "confidence": None,
-        "summary": None,
-    }
-    return final_output, "unavailable", "Sentiment Analysis subgraph is not yet implemented"
+    request = {"ticker": state["ticker"]}
+    try:
+        result = _sentiment_graph.invoke(request)
+    except Exception as exc:  # subgraph itself already handles expected failures; this is unexpected
+        return None, "error", f"sentiment_analysis subgraph raised: {exc}"
+
+    final_output = result.get("final_output")
+    if final_output and final_output.get("error"):
+        return final_output, "error", final_output["error"].get("reason")
+
+    if final_output and final_output.get("direction") is None:
+        source_status = final_output.get("source_status") or {}
+        return (
+            final_output,
+            "unavailable",
+            f"no transcript or annual-report sentiment available (source_status={source_status})",
+        )
+    return final_output, "ok", None
