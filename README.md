@@ -65,6 +65,31 @@ $o="certs\win-ca.pem"; ni -Force (Split-Path $o) -ItemType Directory | Out-Null;
 `bootstrap.py` picks `backend/certs/win-ca.pem` up automatically. It is
 machine-specific and gitignored — regenerate it per machine.
 
+## Frontend Setup
+
+The chat UI is a Next.js (App Router, TypeScript, Tailwind) app that lives in
+`frontend/`, built as a **static export**. `backend/main.py` mounts
+`frontend/out` (the build output, gitignored) at `/`, so the API and the UI
+are served from the same FastAPI process on the same origin — no CORS
+configuration needed.
+
+```bash
+cd frontend
+npm install
+npm run build   # static export -> frontend/out
+```
+
+Then start the backend as usual (`uvicorn main:app --reload` from `backend/`)
+and open `http://127.0.0.1:8000/`. Re-run `npm run build` after any frontend
+change and refresh the page — StaticFiles reads from disk on every request,
+so no backend restart is needed.
+
+`npm run dev` (plain Next dev server on port 3000) also works for fast UI
+iteration, but its `/api/chat` calls will 404 since nothing serves the
+backend on that same origin in dev mode — use it for layout/markup work,
+and `npm run build` + the FastAPI-served page for anything that needs a
+real API response.
+
 ## Seeding data
 
 ### Fundamentals

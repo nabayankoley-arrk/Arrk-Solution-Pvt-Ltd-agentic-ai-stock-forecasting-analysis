@@ -22,7 +22,7 @@ def persist_run(state):
 
     record = {
         "run_id": state.get("run_id"),
-        "ticker": state.get("ticker"),
+        "ticker": state.get("ticker") or "unknown",
         "analysis_horizon": state.get("horizon") or "unknown",
         "technical_status": pillar_status.get("technical"),
         "fundamental_status": pillar_status.get("fundamental"),
