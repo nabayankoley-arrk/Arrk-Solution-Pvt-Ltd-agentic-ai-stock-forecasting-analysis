@@ -283,7 +283,9 @@ def run_chat(request: ChatRequest):
     if _is_out_of_scope_response(response):
         response_type, reply = "out_of_scope", response["message"]
     elif _is_error_response(response):
-        response_type, reply = "error", response.get("reason") or "Something went wrong processing that request."
+        reason = response.get("reason")
+        response_type = "error"
+        reply = reason if reason and not _is_internal_detail(reason) else "Something went wrong processing that request."
     else:
         response_type, reply = "analysis", _format_analysis_reply(response)
 
@@ -295,20 +297,13 @@ def run_chat(request: ChatRequest):
     )
 
 
-# Document fetching and summarisation: /api/companies, /api/documents,
-# /api/inventory/{symbol}, /api/documents/files. Included before the mount
-# below for the same reason the routes above are declared before it --
-# Starlette matches in registration order, and the catch-all would
-# otherwise swallow them.
-app.include_router(documents_router)
-
-
-# Serves frontend/index.html (a minimal, dependency-free chat page against
-# /api/chat) at the site root. Mounted last, after every @app.post route
-# above and after FastAPI's own auto-registered /docs, /openapi.json --
-# Starlette matches routes in registration order, so this catch-all mount
-# never shadows them. Same-origin as the API (both served by this one
-# uvicorn process), so the page's fetch("/api/chat") calls need no CORS
-# configuration.
-_FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+# Serves the Next.js chat frontend's static export (frontend/ is that
+# app's source; `npm run build` there outputs the deployable site to
+# frontend/out -- see frontend/next.config.js). Mounted last, after every
+# @app.post route above and after FastAPI's own auto-registered /docs,
+# /openapi.json -- Starlette matches routes in registration order, so this
+# catch-all mount never shadows them. Same-origin as the API (both served
+# by this one uvicorn process), so the page's fetch("/api/chat") calls need
+# no CORS configuration.
+_FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend" / "out"
 app.mount("/", StaticFiles(directory=_FRONTEND_DIR, html=True), name="frontend")
