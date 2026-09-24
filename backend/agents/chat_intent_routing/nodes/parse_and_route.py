@@ -21,7 +21,12 @@ Ticker resolution, in this order:
     2. a ".NS"/".BO"-suffixed token found in `message` (NSE/BSE tickers,
        matching this codebase's own convention -- see e.g.
        agents/orchestrator/smoke_test.py's "TCS.NS", "WIPRO.NS")
-    3. only if intent is already 'stock_market' from a keyword match: the
+    3. a bare ticker symbol ("TCS", "INFY") or company short name
+       ("Infosys", "Titan") found in `message`, looked up against
+       `universe` -- see _ticker_lookup.py. Tried only after step 2 finds
+       nothing, since a suffixed token needs no database round trip and is
+       unambiguous on its own.
+    4. only if intent is already 'stock_market' from a keyword match: the
        most recent entry in user_memory["watchlist"] (loaded by
        load_user_memory, which runs before this node -- see graph.py) --
        the "Memory-Informed Routing" behavior the User Memory extension's
@@ -39,6 +44,7 @@ node duplicating that check.
 import re
 
 from ..config import STOCK_KEYWORDS
+from ._ticker_lookup import resolve_ticker_from_text
 
 _TICKER_RE = re.compile(r"\b([A-Z]{1,15}\.(?:NS|BO))\b")
 
@@ -47,7 +53,9 @@ def _extract_ticker(message):
     if not message:
         return None
     match = _TICKER_RE.search(message.upper())
-    return match.group(1) if match else None
+    if match:
+        return match.group(1)
+    return resolve_ticker_from_text(message)
 
 
 def parse_and_route(state):
