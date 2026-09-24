@@ -92,18 +92,32 @@ real API response.
 
 ## Seeding data
 
-### Fundamentals
+### Universe
 
-`seed_fundamentals.py` only seeds tickers **already in `universe`**, and nothing
-in the repo populates that table. Insert your tickers first:
+`universe` is the FK parent every other table below needs a row in, and
+nothing populated it until `db/seed_universe.py`: it fetches the top 20
+BSE-listed companies by market capitalisation (`jobs.top20`, the same source
+`jobs/summarise_reports.py` uses) and upserts each in. From `backend/`:
 
-```sql
-INSERT INTO universe (ticker, company_name, exchange, sector)
-VALUES ('TCS.NS', 'Tata Consultancy Services', 'NSE', 'Information Technology')
-ON CONFLICT (ticker) DO NOTHING;
+```bash
+python -m db.seed_universe
 ```
 
-Then, from `backend/`:
+`seed_fundamentals.py` and `seed_price_history.py` both call this
+automatically at the start of their own `main()`, so running either with no
+arguments seeds exactly the current top 20 — a manual `INSERT` is no longer
+needed for the default path. BSE's own ticker is unsuffixed (`INFY`); this
+appends `.NS` to match the NSE-suffixed form the rest of the codebase assumes
+(`fetch_fundamentals_data.py`, `fetch_price_history.py`, both yfinance seed
+scripts). `sector` is left NULL — BSE's scrip list carries no sector field.
+
+The list moves with the market: re-running after a big shift can return a
+different twentieth name (and safely upserts it in alongside whatever was
+seeded before — nothing already in `universe` is removed).
+
+### Fundamentals
+
+From `backend/`:
 
 ```bash
 python -m db.seed_fundamentals
@@ -112,26 +126,33 @@ python -m db.seed_fundamentals
 Run it as a module — `python db/seed_fundamentals.py` fails with
 `attempted relative import with no known parent package`.
 
-It writes `financial_statements` and `analyst_price_targets` from yfinance.
-`analyst_rating_changes` is intentionally not seeded (yfinance returned no data
-for the tickers tested). Yahoo rate-limits aggressively from shared office IPs;
-`Too Many Requests` is transient, so just retry.
+Writes `financial_statements` and `analyst_price_targets` from yfinance for
+the top 20 (see Universe above). `analyst_rating_changes` is intentionally
+not seeded (yfinance returned no data for the tickers tested).
+
+Yahoo rate-limits aggressively from shared office IPs, and worse across 20
+tickers in one run than for a single one — expect some `Too Many Requests`
+failures on the first pass. It is safe to just re-run: every insert is an
+upsert, so an already-seeded ticker is refreshed, not duplicated, and only
+the ones that failed cost anything on the next attempt.
 
 ### Price history
 
-From `backend/`, after the tickers are in `universe`:
+From `backend/`:
 
 ```bash
-python -m db.seed_price_history TCS.NS
+python -m db.seed_price_history                # top 20 by market cap
+python -m db.seed_price_history TCS.NS INFY.NS # just these
 ```
 
-Omit the ticker to seed every ticker in `universe`. Tickers not in `universe`
+Naming tickers still requires them to already be in `universe`; unknown ones
 are skipped with a message rather than failing on the foreign key.
 
 Fetches 3 years of daily OHLCV into `"Technical".price_history` — more than the
 250 trading days `technical_analysis/config.py` asks for, because the
 Orchestrator's `long_term` horizon requests `lookback_days=500`. Re-running
-upserts on `(ticker, trade_date)`, so it is safe to repeat daily.
+upserts on `(ticker, trade_date)`, so it is safe to repeat daily — and, as with
+Fundamentals above, safe to just re-run after a rate-limited batch.
 
 Seed this **before** running any analysis: two separate things read the table.
 The technical pillar computes every indicator from it and treats fewer than
