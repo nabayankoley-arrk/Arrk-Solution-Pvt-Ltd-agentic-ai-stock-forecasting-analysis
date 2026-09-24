@@ -10,8 +10,10 @@ check_data_sufficiency.py's MIN_FILING_YEARS check ("insufficient
 fundamentals history for analysis") regardless of how complete the real
 company's financials actually are.
 
-Seeds every ticker already present in `universe` -- both annual and
-quarterly financial_statements rows (revenue, gross_profit,
+Seeds the top 20 BSE-listed companies by market capitalisation (see
+db/seed_universe.py, called from main() below -- it upserts each into
+`universe` first, since financial_statements has a foreign key there) --
+both annual and quarterly financial_statements rows (revenue, gross_profit,
 operating_profit, net_profit, eps, total_debt, total_equity,
 cash_flow_operations, inventory, receivables, shares_outstanding -- see
 fetch_fundamentals_data.py's STATEMENT_COLUMNS), plus one
@@ -44,6 +46,7 @@ import math
 import yfinance as yf
 
 from .connection import get_connection
+from .seed_universe import ensure_top20_in_universe
 
 _STATEMENT_COLUMNS = (
     "ticker",
@@ -181,9 +184,7 @@ def seed_ticker(ticker):
 
 
 def main():
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute("SELECT ticker FROM universe ORDER BY ticker")
-        tickers = [row[0] for row in cur.fetchall()]
+    tickers = ensure_top20_in_universe()
 
     for ticker in tickers:
         try:

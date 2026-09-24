@@ -16,15 +16,16 @@ things depend on the table being populated:
     compute_relative_valuation and compute_analyst_consensus both report
     "insufficient data" no matter how complete the filings are.
 
-Seeds every ticker in `universe` by default, or only those named on the
-command line. A ticker must already be in `universe` -- price_history has
-a foreign key to it, and nothing in this repo populates `universe` itself
-(same constraint as seed_fundamentals.py; see README.md).
+Seeds the top 20 BSE-listed companies by market capitalisation by default
+(see db/seed_universe.py, which this calls -- it upserts each into
+`universe` first, since price_history has a foreign key there), or only
+the tickers named on the command line, which must already be in `universe`
+(seed_universe.py's own upsert, or a manual INSERT; see README.md).
 
 Run from the backend/ directory, as a module so the relative import below
 resolves:
 
-    python -m db.seed_price_history                # every ticker in universe
+    python -m db.seed_price_history                # top 20 by market cap
     python -m db.seed_price_history TCS.NS INFY.NS # just these
 
 DEFAULT_PERIOD is 3y rather than the 250 trading days config.LOOKBACK_DAYS
@@ -43,6 +44,7 @@ import sys
 import yfinance as yf
 
 from .connection import get_connection
+from .seed_universe import ensure_top20_in_universe
 from .upsert import save_price_history
 
 DEFAULT_PERIOD = "3y"
@@ -121,25 +123,31 @@ def seed_ticker(ticker, period=DEFAULT_PERIOD):
 def main(argv=None):
     requested = [ticker.strip().upper() for ticker in (argv or []) if ticker.strip()]
 
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute("SELECT ticker FROM universe ORDER BY ticker")
-        known = [row[0] for row in cur.fetchall()]
+    # Always ensures the top 20 are in `universe`, regardless of which branch
+    # below actually uses the returned list -- explicit tickers still get
+    # checked against `universe` next, which this keeps from being emptier
+    # than it should be on a fresh database.
+    top20_tickers = ensure_top20_in_universe()
 
     if requested:
+        with get_connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT ticker FROM universe ORDER BY ticker")
+            known = [row[0] for row in cur.fetchall()]
         unknown = [ticker for ticker in requested if ticker not in known]
         for ticker in unknown:
             print(f"{ticker}: SKIPPED -- not in universe (insert it there first; see README.md)")
         tickers = [ticker for ticker in requested if ticker in known]
     else:
-        tickers = known
+        tickers = top20_tickers
 
     if not tickers:
-        # Distinguish the two ways of ending up with nothing to do: an empty
-        # `universe`, versus every named ticker missing from a populated one.
+        # Distinguish the two ways of ending up with nothing to do: the top
+        # 20 lookup itself returning nothing, versus every named ticker
+        # missing from `universe`.
         if requested:
             print("nothing to seed: none of the named tickers are in universe")
         else:
-            print("nothing to seed: universe is empty (see README.md)")
+            print("nothing to seed: top 20 lookup returned nothing")
         return
 
     for ticker in tickers:
