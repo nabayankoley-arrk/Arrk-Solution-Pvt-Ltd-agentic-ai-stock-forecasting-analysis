@@ -211,75 +211,12 @@ def save_orchestrator_run(record):
         )
 
 
-def save_conversation_session(session_id, last_ticker, last_horizon, last_scope):
-    """Upserts conversation_sessions -- the Chat Intent & Routing
-    Subgraph specification's update_session_context node's own
-    persistence ("Writes: updated_context, and the underlying session
-    store"). Only called on a normal completed turn (see
-    nodes/update_session_context.py), matching the specification's
-    Architecture note that session state, like user memory, is only
-    updated after a real result is produced.
-    """
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO conversation_sessions (session_id, last_ticker, last_horizon, last_scope, updated_at)
-            VALUES (%s, %s, %s, %s, NOW())
-            ON CONFLICT (session_id) DO UPDATE SET
-                last_ticker = EXCLUDED.last_ticker,
-                last_horizon = EXCLUDED.last_horizon,
-                last_scope = EXCLUDED.last_scope,
-                updated_at = NOW()
-            """,
-            (session_id, last_ticker, last_horizon, Json(last_scope)),
-        )
-
-
-def append_conversation_message(session_id, role, content):
-    """Appends one row to conversation_messages -- the specification's
-    own "Optional, for audit/debugging conversation flow" table. This
-    project also uses it as the source `nodes/load_conversation_context.py`
-    hydrates conversation_history from on a caller's next request, since a
-    stateless HTTP endpoint has nowhere else to recover a session's prior
-    turns from (see that module's docstring). Ensures conversation_sessions
-    has a row first (FK requirement) via a no-op upsert of just session_id.
-    """
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO conversation_sessions (session_id)
-            VALUES (%s)
-            ON CONFLICT (session_id) DO NOTHING
-            """,
-            (session_id,),
-        )
-        cur.execute(
-            "SELECT COALESCE(MAX(turn_index), -1) + 1 FROM conversation_messages WHERE session_id = %s",
-            (session_id,),
-        )
-        next_turn_index = cur.fetchone()[0]
-        cur.execute(
-            """
-            INSERT INTO conversation_messages (session_id, turn_index, role, content)
-            VALUES (%s, %s, %s, %s)
-            """,
-            (session_id, next_turn_index, role, content),
-        )
-
-
 def save_conversation_turn(record):
-    """Appends one row to "Memory".conversation_history -- the storage
-    agents/chat_intent_routing/nodes/persist_conversation_turn.py needs
-    (and agents/chat_intent_routing/nodes/load_conversation_history.py
-    reads back, ordered by created_at per user_id). That subgraph is
-    Sourabh Shetti's implementation; this function only supplies the
-    database-layer dependency it already expects by name -- it does not
-    change anything under agents/chat_intent_routing itself. See
-    db/schema.sql for the table this writes to.
+    """Appends one row to "Memory".conversation_history, the append-only turn
+    log written by agents/chat_intent_routing/nodes/persist_conversation_turn.py.
 
     record: {"turn_id", "user_id", "thread_id", "message", "intent",
-    "resolved_ticker", "response"} -- exactly the dict
-    persist_conversation_turn.py already builds.
+    "resolved_ticker", "response"}
     """
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -298,21 +235,6 @@ def save_conversation_turn(record):
                 record.get("resolved_ticker"),
                 Json(record.get("response")),
             ),
-        )
-
-
-def save_user_memory(user_id, memory):
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO "Memory".user_memory (user_id, watchlist, preferences, updated_at)
-            VALUES (%s, %s, %s, NOW())
-            ON CONFLICT (user_id) DO UPDATE SET
-                watchlist = EXCLUDED.watchlist,
-                preferences = EXCLUDED.preferences,
-                updated_at = NOW()
-            """,
-            (user_id, Json(memory.get("watchlist")), Json(memory.get("preferences"))),
         )
 
 

@@ -1,25 +1,16 @@
 """route_to_orchestrator — stock/market intent handler.
 
 Invokes the Orchestrator Subgraph (agents/orchestrator/graph.py) for the
-ticker/horizon/forecast_days this subgraph resolved, now that the
-Orchestrator Subgraph itself no longer knows about user_id/user_memory
-(see that package's state.py/graph.py) -- memory is entirely this
-subgraph's concern.
+ticker/horizon/forecast_days this subgraph resolved.
 
-Only reached when parse_and_route's intent is 'stock_market' (see
-graph.py's conditional edge). An unresolved ticker still reaches here (see
-parse_and_route's own docstring) and comes back as the Orchestrator
-Subgraph's own "ticker is required" error_response rather than a special
-case handled here.
+Only reached when interpret's action is 'analyze' (see graph.py), with a
+resolved_ticker already validated against `universe`.
 
-The Orchestrator Subgraph compiles with its own MemorySaver checkpointer
-and its own thread_id (see build_orchestrator_graph, generated fresh per
-call) -- it stays a black box invoked at arm's length, not a nested
-subgraph sharing this graph's checkpointer, since it can pause mid-run for
-request_human_review and this subgraph has no reviewer-facing surface of
-its own yet. A pause is auto-approved here for that reason; revisit once
-this layer can expose a pending review to a caller instead of always
-approving on its behalf.
+The Orchestrator Subgraph compiles with its own MemorySaver checkpointer,
+which its request_human_review interrupt() needs. Each call gets a fresh
+thread_id, any pause is auto-approved (this layer has no reviewer-facing
+surface yet), and the thread is deleted afterwards -- a MemorySaver keeps
+every thread forever otherwise, so memory would grow with every request.
 
 An unexpected exception out of the Orchestrator Subgraph itself (as
 opposed to its own normal validation error_response, which is just a
@@ -45,7 +36,8 @@ def route_to_orchestrator(state):
     if forecast_days is not None:
         request["forecast_days"] = forecast_days
 
-    thread_config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    thread_id = str(uuid.uuid4())
+    thread_config = {"configurable": {"thread_id": thread_id}}
     try:
         result = _orchestrator_graph.invoke(request, config=thread_config)
 
@@ -59,6 +51,8 @@ def route_to_orchestrator(state):
     except Exception as exc:
         error_response = {"ticker": ticker, "reason": f"orchestrator failed: {exc}"}
         return {"orchestrator_result": None, "response": error_response}
+    finally:
+        _orchestrator_graph.checkpointer.delete_thread(thread_id)
 
     response = result.get("final_response") or result.get("error_response")
     return {"orchestrator_result": result, "response": response}

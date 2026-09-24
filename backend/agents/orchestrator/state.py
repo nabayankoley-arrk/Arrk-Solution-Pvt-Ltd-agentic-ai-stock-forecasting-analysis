@@ -27,13 +27,6 @@ class OrchestratorState(TypedDict, total=False):
     ticker: Optional[str]  # required -- see validate_input.py
     horizon: Optional[str]  # defaulted by validate_input
 
-    # User memory (watchlist-informed ticker resolution, preference
-    # persistence) is no longer this subgraph's concern -- it moved to
-    # agents/chat_intent_routing, the base subgraph these fields and the
-    # load_user_memory/update_user_memory nodes used to be temporarily
-    # wired into here (see git history). This subgraph now only ever sees
-    # an already-resolved ticker.
-
     # forecast_days: optional, caller-supplied (e.g.
     # {"ticker": ..., "horizon": "medium_term", "forecast_days": 30}). Not
     # part of the lead's original specification and not tied to any

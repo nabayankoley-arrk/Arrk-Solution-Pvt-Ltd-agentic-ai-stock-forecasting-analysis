@@ -30,12 +30,9 @@ EXPECTED_TABLES = (
     ("public", "analyst_rating_changes"),
     ("public", "fundamental_analysis_results"),
     ("public", "orchestrator_runs"),
-    ("public", "conversation_sessions"),
-    ("public", "conversation_messages"),
     ("public", "document_summaries"),
     ("Technical", "price_history"),
     ("Technical", "technical_analysis_results"),
-    ("Memory", "user_memory"),
     ("Memory", "conversation_history"),
 )
 

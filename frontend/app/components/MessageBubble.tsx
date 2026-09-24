@@ -4,12 +4,14 @@ import type { ChatMessage } from "../lib/chat";
 const BADGE_STYLES: Record<string, string> = {
   analysis:
     "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400",
+  reply: "bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-400",
   out_of_scope: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400",
   error: "bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400",
 };
 
 const BADGE_LABEL: Record<string, string> = {
   analysis: "analysis",
+  reply: "reply",
   out_of_scope: "out of scope",
   error: "error",
 };

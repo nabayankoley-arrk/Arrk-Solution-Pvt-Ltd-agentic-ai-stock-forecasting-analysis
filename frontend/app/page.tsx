@@ -4,7 +4,7 @@ import { Menu, Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import MessageBubble from "./components/MessageBubble";
 import Sidebar from "./components/Sidebar";
-import { ChatApiResponse, ChatMessage, newSessionMessage, uid } from "./lib/chat";
+import { ChatApiResponse, ChatMessage, getUserId, newSessionMessage, uid } from "./lib/chat";
 
 export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([newSessionMessage()]);
@@ -45,7 +45,7 @@ export default function Home() {
     setLoading(true);
 
     try {
-      const body: { message: string; session_id?: string } = { message };
+      const body: { message: string; user_id: string; session_id?: string } = { message, user_id: getUserId() };
       if (sessionId) body.session_id = sessionId;
 
       const response = await fetch("/api/chat", {

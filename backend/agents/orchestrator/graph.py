@@ -22,13 +22,8 @@ ML price-forecast model (ml/predict.py) is kept as a standalone module
 under backend/ml/, decoupled from the orchestrator so it can be wired back
 in later without reworking this graph.
 
-This subgraph no longer owns any user-memory concern (no load_user_memory/
-update_user_memory nodes, no user_id/user_memory fields) -- that moved to
-agents/chat_intent_routing, the base Chat Intent & Routing subgraph, which
-now resolves the ticker (including any watchlist fallback) before ever
-calling into this graph, and owns watchlist/preference persistence
-afterwards. See agents/chat_intent_routing/nodes/route_to_orchestrator.py
-for the caller side of that split.
+This subgraph has no user or conversation concerns: agents/chat_intent_routing
+resolves the ticker before calling in (see its nodes/route_to_orchestrator.py).
 
 An optional forecast_days input (see state.py's note on that field) rides
 alongside ticker/horizon without adding a graph node: build_final_response

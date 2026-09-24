@@ -6,11 +6,9 @@ omitted. Invalid requests are routed to build_error_response by
 graph.py's route_after_validate; this node only decides is_valid/
 validation_error, it doesn't build the error payload itself.
 
-Ticker resolution (falling back to a caller's watchlist when none is
-supplied) is no longer this node's job -- that's now
-agents/chat_intent_routing/nodes/parse_and_route.py's responsibility, run
-before this subgraph is ever invoked. This node just requires a ticker to
-already be present.
+Ticker resolution is not this node's job -- that's
+agents/chat_intent_routing/nodes/interpret.py's, run before this subgraph is
+ever invoked. This node just requires a ticker to already be present.
 
 Also resolves horizon into each pillar subgraph's own request shape
 (lookback_days for Technical, ratio_basis/lookback_years for

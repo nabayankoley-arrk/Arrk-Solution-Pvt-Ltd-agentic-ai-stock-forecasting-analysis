@@ -22,7 +22,7 @@ export interface ChatMessage {
 // field for field, including the snake_case key FastAPI actually returns.
 export interface ChatApiResponse {
   reply: string;
-  response_type: "analysis" | "out_of_scope" | "error";
+  response_type: "analysis" | "reply" | "out_of_scope" | "error";
   session_id: string;
   ticker?: string | null;
 }
@@ -36,6 +36,23 @@ export function uid(): string {
     return crypto.randomUUID();
   }
   return `id-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+// A stable per-browser id, sent as /api/chat's user_id so the backend's audit
+// log can group one browser's conversations. Falls back to a fresh id per page
+// load when localStorage is unavailable (private mode, blocked storage).
+const USER_ID_KEY = "stock-chat-user-id";
+
+export function getUserId(): string {
+  try {
+    const existing = localStorage.getItem(USER_ID_KEY);
+    if (existing) return existing;
+    const created = uid();
+    localStorage.setItem(USER_ID_KEY, created);
+    return created;
+  } catch {
+    return uid();
+  }
 }
 
 // The one message a fresh chat (initial load, or "New session") opens with.
@@ -52,11 +69,8 @@ export function newSessionMessage(): ChatMessage {
   };
 }
 
-// Sidebar's "Try asking" shortcuts. NSE-suffixed tickers and a keyword-only
-// follow-up, matching what the backend's parse_and_route.py actually resolves
-// (an explicit ticker, or one of config.STOCK_KEYWORDS against the watchlist
-// memory already established -- a follow-up with neither is routed
-// out_of_scope, so no example here is phrased that way).
+// Sidebar's "Try asking" shortcuts. The backend's LLM resolves company names
+// and follow-ups from the conversation, so plain phrasing works.
 export const EXAMPLE_PROMPTS: string[] = [
   "How is TCS.NS looking today?",
   "What's the trend for INFY.NS?",

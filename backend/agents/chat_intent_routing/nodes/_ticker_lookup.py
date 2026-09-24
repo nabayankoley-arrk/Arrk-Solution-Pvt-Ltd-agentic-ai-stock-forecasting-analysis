@@ -1,47 +1,20 @@
-"""_ticker_lookup — resolves a company name or bare ticker symbol mentioned
-in free text against `universe`, for parse_and_route.py's ticker resolution
-step 2 (see that module's own docstring): its `_TICKER_RE` only recognizes an
-explicit ".NS"/".BO"-suffixed token, so "how is TCS looking?" or "predict
-prices for infosys tomorrow" resolved to no ticker at all and fell through to
-"ticker is required and must be a string" from the Orchestrator's own
-validate_input.py.
+"""_ticker_lookup — the companies this system can analyse, from `universe`.
 
-Deliberately a database lookup, not an LLM call: `universe` (seeded by
-db/seed_universe.py from jobs.top20) already carries an exact, sourced
-mapping for every company this system can actually analyze -- anything
-outside it fails at fetch_price_history.py/fetch_fundamentals_data.py's own
-"not found in universe" checks regardless of how well its name resolves, so
-better name resolution beyond `universe` would not change what a caller can
-ask about. A lookup here is also free of everything an LLM call this session
-kept running into: OpenRouter's rate limits and spend caps, extra latency on
-every single chat turn, and a wrong/hallucinated ticker being harder to
-notice than "not found in universe" is.
+tracked_companies() gives interpret's LLM the list to choose from, and
+resolve_ticker_from_text() maps what the LLM returned ("Infosys", "TCS") back
+to an exact NSE ticker ("INFY.NS"), so a hallucinated or loosely named company
+never reaches the Orchestrator.
 
-Two lookups, both built from the same `universe` query:
-  1. Bare ticker symbol ("TCS", "INFY", "M&M") as a whole word, case-
-     insensitive -- the unsuffixed form of what _TICKER_RE already matches
-     suffixed. Unambiguous, since ticker symbols are already unique.
-  2. Company short name, derived by stripping a fixed set of trailing
-     corporate-suffix words (Ltd, Limited, Bank, Company, ...) off
-     `company_name` -- "Infosys Ltd" -> "Infosys", "Titan Company Ltd" ->
-     "Titan". Matched as a whole phrase, not word-by-word: several of the
-     top 20 share a word ("Kotak Mahindra Bank" and "Mahindra & Mahindra"
-     both contain "Mahindra"), so a single-word match would be ambiguous.
-     This means a short single word the message actually contains (e.g.
-     "infosys") resolves, but a name that only shortens further in common
-     speech ("Reliance" for "Reliance Industries") does not -- deliberately
-     conservative rather than guessing. Extend the alias behavior by adding
-     to `_SUFFIX_WORDS` (a general rule, sourced from real company_name
-     values) rather than hand-listing specific companies (matching
-     jobs/top20.py's own reasoning: "reproducible and sourced rather than
-     hand-maintained").
+Name matching, both built from the same `universe` query:
+  1. Bare ticker symbol ("TCS", "INFY", "M&M") as a whole word, case-insensitive.
+  2. Company short name, derived by stripping trailing corporate-suffix words
+     (_SUFFIX_WORDS) off `company_name` -- "Infosys Ltd" -> "Infosys". Matched
+     as a whole phrase, since several companies share a word ("Kotak Mahindra
+     Bank" and "Mahindra & Mahindra").
 
 Cached in-process for CACHE_TTL_SECONDS: `universe` is ~20 rows and changes
-only when someone re-runs db/seed_universe.py, so refetching it on every
-chat message would be a DB round trip this node has no other reason to make.
-Degrades to "no match" (not an error) on any database problem, same as
-load_user_memory.py/load_conversation_history.py -- a lookup failure should
-fall through to the watchlist or "ticker is required", not break routing.
+only when db/seed_universe.py is re-run. Degrades to "no match" / an empty
+list on any database problem rather than raising.
 """
 
 import re
@@ -66,7 +39,7 @@ _SUFFIX_WORDS = (
 
 _WORD_RE = re.compile(r"[a-z0-9&]+")
 
-_cache = {"expires_at": 0.0, "by_ticker": {}, "short_names": []}
+_cache = {"expires_at": 0.0, "by_ticker": {}, "short_names": [], "companies": []}
 
 
 def _short_name(company_name):
@@ -115,7 +88,16 @@ def _load(force=False):
     # this keeps the most specific match first regardless.
     short_names.sort(key=lambda pair: len(pair[0]), reverse=True)
 
-    _cache.update(expires_at=now + CACHE_TTL_SECONDS, by_ticker=by_ticker, short_names=short_names)
+    companies = sorted((ticker, company_name) for ticker, company_name in rows)
+    _cache.update(
+        expires_at=now + CACHE_TTL_SECONDS, by_ticker=by_ticker, short_names=short_names, companies=companies
+    )
+
+
+def tracked_companies():
+    """[(ticker, company_name), ...] for every active `universe` row, sorted by ticker."""
+    _load()
+    return list(_cache["companies"])
 
 
 def resolve_ticker_from_text(message):

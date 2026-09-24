@@ -1,23 +1,14 @@
-"""persist_conversation_turn — history-persistence node.
+"""persist_conversation_turn — audit-log node.
 
-Appends this turn (the caller's message and the response this graph
-produced) to "Memory".conversation_history, in parallel with
-update_user_memory (see graph.py -- both branches feed both nodes, and
-neither reads the other's output). Runs regardless of which intent branch
-executed, same reasoning as update_user_memory's own unconditional wiring:
-an out_of_scope turn is still worth remembering as context for a later
-one, even though it updates no watchlist.
+Appends this turn (the caller's message, the action taken and the reply) to
+"Memory".conversation_history. Runs on every turn, whatever the action. This is
+an audit trail only: the conversation itself is restored from the checkpointer.
 
-No-ops when there's no user_id, same as update_user_memory, since there's
-nothing to key the row on. Unlike "Memory".user_memory (one row per user,
-overwritten in place), this is an append-only log: save_conversation_turn
-always inserts a new row rather than merging into an existing one.
-
-A save failure here is logged and swallowed rather than raised -- same
-reasoning as update_user_memory.py: `response` has already been computed
-by this point, and a history-log write failure shouldn't cost the caller
-that answer.
+No-ops without a user_id (nothing to key the row on) or when
+config.MEMORY_ENABLED is False. A save failure is logged and swallowed: the
+reply is already computed, and a log write shouldn't cost the caller the answer.
 """
+
 
 import uuid
 
@@ -43,9 +34,9 @@ def persist_conversation_turn(state):
                 "user_id": user_id,
                 "thread_id": state.get("thread_id"),
                 "message": state.get("message"),
-                "intent": state.get("intent"),
+                "intent": state.get("action"),
                 "resolved_ticker": state.get("resolved_ticker"),
-                "response": state.get("response"),
+                "response": {"reply": state.get("reply"), "analysis": state.get("response")},
             }
         )
     except psycopg2.Error as exc:

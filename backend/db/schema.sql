@@ -1,4 +1,4 @@
--- Postgres schema for this project, assembled from three sources:
+-- Postgres schema for this project, assembled from two sources:
 --   1. The Fundamental Analysis Subgraph specification's own "Database Schema"
 --      section (financial_statements, analyst_price_targets,
 --      analyst_rating_changes, fundamental_analysis_results) -- transcribed
@@ -7,13 +7,10 @@
 --      NOT NULL, which the prose DDL omits but the primary key requires).
 --   2. The Orchestrator Subgraph specification's "Database Schema" section
 --      (orchestrator_runs) -- transcribed verbatim.
---   3. The Chat Intent & Routing Subgraph specification's "Database Schema"
---      section (conversation_sessions, conversation_messages) -- transcribed
---      verbatim.
 --
--- Two tables are NOT from any specification document -- they are inferred
--- directly from existing code that queries them, since no document defines
--- them. Each is marked below with exactly what code depends on it and why.
+-- The remaining tables are NOT from any specification document -- they are
+-- inferred directly from the code that uses them. Each is marked below with
+-- exactly what code depends on it and why.
 --
 -- Run with:  psql "$DATABASE_URL" -f backend/db/schema.sql
 -- (or set DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD and use `psql -h ... -f ...`)
@@ -152,31 +149,6 @@ CREATE TABLE IF NOT EXISTS orchestrator_runs (
 );
 
 -- ============================================================================
--- conversation_sessions / conversation_messages -- Chat Intent & Routing
--- Subgraph spec. Not used by this repo's current chat_intent_routing/graph.py
--- (a temporary bridge -- see that file's docstring) since the real
--- parse_and_route node these tables support has not been built yet. Created
--- now so the schema is ready when it is.
--- ============================================================================
-CREATE TABLE IF NOT EXISTS conversation_sessions (
-    session_id  UUID PRIMARY KEY,
-    last_ticker VARCHAR(20),
-    last_horizon VARCHAR(10),
-    last_scope  JSONB, -- e.g. ["technical", "fundamental"]
-    updated_at  TIMESTAMP DEFAULT NOW()
-);
-
--- Optional, for audit/debugging conversation flow rather than resolution logic.
-CREATE TABLE IF NOT EXISTS conversation_messages (
-    session_id  UUID NOT NULL REFERENCES conversation_sessions(session_id),
-    turn_index  INTEGER NOT NULL,
-    role        VARCHAR(10) CHECK (role IN ('user', 'assistant')),
-    content     TEXT,
-    created_at  TIMESTAMP DEFAULT NOW(),
-    PRIMARY KEY (session_id, turn_index)
-);
-
--- ============================================================================
 -- "Technical".price_history -- NOT from any specification document shared
 -- so far. Inferred from existing code that queries it:
 --   - backend/agents/orchestrator/nodes/_current_price.py reads the latest
@@ -238,32 +210,12 @@ CREATE TABLE IF NOT EXISTS "Technical".technical_analysis_results (
 CREATE INDEX IF NOT EXISTS idx_tar_ticker_date
     ON "Technical".technical_analysis_results (ticker, analysis_date DESC);
 
--- ============================================================================
--- "Memory".user_memory -- NOT from any specification document shared so far
--- (referenced only as "the already-created 'Memory'.user_memory table" by
--- a "User Memory -- Specification (Chat Intent & Routing Subgraph
--- Extension)" document that has not been shared with this repo). Inferred
--- from backend/agents/chat_intent_routing/nodes/load_user_memory.py and
--- update_user_memory.py, which is the only code that reads/writes it.
--- Confirm against that extension document once available.
--- ============================================================================
 CREATE SCHEMA IF NOT EXISTS "Memory";
 
-CREATE TABLE IF NOT EXISTS "Memory".user_memory (
-    user_id      VARCHAR(64) PRIMARY KEY,
-    watchlist    JSONB,
-    preferences  JSONB,
-    updated_at   TIMESTAMP DEFAULT NOW()
-);
-
 -- ============================================================================
--- "Memory".conversation_history -- append-only per-user turn log. Needed by
--- agents/chat_intent_routing/nodes/persist_conversation_turn.py (writes) and
--- nodes/load_conversation_history.py (reads, ordered by created_at per
--- user_id) -- Sourabh Shetti's implementation of the Chat Intent & Routing
--- subgraph. Inferred from those two node files, which are the only code
--- that reads/writes it; not from any specification document shared with
--- this repo.
+-- "Memory".conversation_history -- append-only per-user turn log, written by
+-- agents/chat_intent_routing/nodes/persist_conversation_turn.py. Nothing
+-- reads it back yet; it serves as an audit trail.
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS "Memory".conversation_history (
     turn_id          UUID PRIMARY KEY,
