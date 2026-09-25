@@ -12,11 +12,13 @@ from .. import config
 from ..reply import format_analysis_reply
 
 
-def _text(content):
-    """Message content as plain text: some providers return a list of parts."""
+def message_text(content, strip=True):
+    """Message content as plain text: some providers return a list of parts.
+    strip=False keeps edge whitespace, which a streamed token needs."""
     if isinstance(content, list):
-        return "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content).strip()
-    return (content or "").strip()
+        content = "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content)
+    content = content or ""
+    return content.strip() if strip else content
 
 
 def finalize(state):
@@ -34,7 +36,7 @@ def finalize(state):
         response_type = "reply"
 
     update = {}
-    reply = _text(last.content)
+    reply = message_text(last.content)
     if not reply:
         # An empty final answer: replace it (same id) so the history stays readable.
         reply = format_analysis_reply(finished[-1]["response"]) if finished else config.UNAVAILABLE_REPLY

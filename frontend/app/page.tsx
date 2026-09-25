@@ -4,7 +4,15 @@ import { Menu, Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import MessageBubble from "./components/MessageBubble";
 import Sidebar from "./components/Sidebar";
-import { ChatApiResponse, ChatMessage, getUserId, newSessionMessage, uid } from "./lib/chat";
+import {
+  ChatApiResponse,
+  ChatMessage,
+  ChatRequestBody,
+  getUserId,
+  newSessionMessage,
+  streamChat,
+  uid,
+} from "./lib/chat";
 
 export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([newSessionMessage()]);
@@ -44,39 +52,40 @@ export default function Home() {
     setInput("");
     setLoading(true);
 
+    // The assistant's bubble exists from the start and fills in as the reply streams.
+    const replyId = uid();
+    setMessages((prev) => [...prev, { id: replyId, role: "assistant", content: "", streaming: true }]);
+
     try {
-      const body: { message: string; user_id: string; session_id?: string } = { message, user_id: getUserId() };
+      const body: ChatRequestBody = { message, user_id: getUserId() };
       if (sessionId) body.session_id = sessionId;
 
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+      const data: ChatApiResponse = await streamChat(body, {
+        onStatus: (status) => updateMessage(replyId, (m) => ({ ...m, status })),
+        onToken: (text) => updateMessage(replyId, (m) => ({ ...m, content: m.content + text, status: undefined })),
       });
 
-      if (!response.ok) {
-        const text = await response.text();
-        addMessage({ role: "system", content: `Request failed (${response.status}): ${text}` });
-        return;
-      }
-
-      const data: ChatApiResponse = await response.json();
       setSessionId(data.session_id);
       if (data.ticker) {
         setTickers((prev) => (prev.includes(data.ticker as string) ? prev : [...prev, data.ticker as string]));
       }
-
-      addMessage({
-        role: "assistant",
+      updateMessage(replyId, (m) => ({
+        ...m,
         content: data.reply,
         responseType: data.response_type,
         ticker: data.ticker,
-      });
+        streaming: false,
+        status: undefined,
+      }));
     } catch (err) {
-      addMessage({ role: "system", content: `Network error: ${String(err)}` });
+      updateMessage(replyId, () => ({ id: replyId, role: "system", content: String(err instanceof Error ? err.message : err) }));
     } finally {
       setLoading(false);
     }
+  }
+
+  function updateMessage(id: string, update: (message: ChatMessage) => ChatMessage) {
+    setMessages((prev) => prev.map((m) => (m.id === id ? update(m) : m)));
   }
 
   function handleSubmit(event: React.FormEvent) {
@@ -120,18 +129,6 @@ export default function Home() {
             {messages.map((m) => (
               <MessageBubble key={m.id} message={m} />
             ))}
-            {loading ? (
-              <div className="flex items-center gap-2.5">
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900">
-                  <span className="sr-only">Assistant is typing</span>
-                </div>
-                <div className="flex items-center gap-1 rounded-2xl rounded-tl-sm border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]" />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]" />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400" />
-                </div>
-              </div>
-            ) : null}
           </div>
         </div>
 

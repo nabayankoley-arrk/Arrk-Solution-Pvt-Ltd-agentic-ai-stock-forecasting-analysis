@@ -9,6 +9,10 @@ Tool calls are executed here rather than by LangGraph's ToolNode because each
 call also records state (current_ticker, analyses), and ToolNode runs parallel
 calls -- "compare TCS and Infosys" -- as concurrent updates to the same keys.
 Calls in one message run in order instead.
+
+Each analysis emits a {"type": "status", ...} event on LangGraph's custom
+stream before it starts, so a streaming caller can show progress while the
+Orchestrator runs (see main.py's /api/chat/stream). A no-op when not streaming.
 """
 
 import json
@@ -16,6 +20,7 @@ from typing import Literal, Optional
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import tool
+from langgraph.config import get_stream_writer
 
 from ..reply import analysis_digest, is_internal_detail
 from ._orchestrator import run_orchestrator
@@ -38,7 +43,7 @@ def analyze_stock(ticker: str, horizon: Optional[Literal["short_term", "medium_t
 TOOLS = [analyze_stock]
 
 
-def _analyze(args):
+def _analyze(args, write_event):
     """-> (tool result for the model, analysis record or None)."""
     raw_ticker = args.get("ticker")
     ticker = resolve_tracked_ticker(raw_ticker)
@@ -46,6 +51,7 @@ def _analyze(args):
         names = ", ".join(f"{t} ({n})" for t, n in tracked_companies())
         return {"error": f"{raw_ticker!r} is not a tracked company. Tracked: {names or 'unavailable'}"}, None
 
+    write_event({"type": "status", "ticker": ticker, "message": f"Analysing {ticker}..."})
     orchestrator_result, response = run_orchestrator(ticker, args.get("horizon"))
     record = {"ticker": ticker, "orchestrator_result": orchestrator_result, "response": response}
     if orchestrator_result is not None and orchestrator_result.get("final_response"):
@@ -59,10 +65,11 @@ def _analyze(args):
 
 
 def tools(state):
+    write_event = get_stream_writer()
     messages, analyses, current_ticker = [], list(state.get("analyses") or []), state.get("current_ticker")
     for call in state["messages"][-1].tool_calls:
         if call["name"] == "analyze_stock":
-            result, record = _analyze(call.get("args") or {})
+            result, record = _analyze(call.get("args") or {}, write_event)
             if record:
                 analyses.append(record)
                 current_ticker = record["ticker"]

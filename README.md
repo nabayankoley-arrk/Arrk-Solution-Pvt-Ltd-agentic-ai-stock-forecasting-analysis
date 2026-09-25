@@ -250,6 +250,15 @@ company, so comparisons work — and answers from the result.
 {"user_id": "your-name", "message": "how is TCS looking today?"}
 ```
 
+`POST /api/chat/stream` takes the same body and runs the same turn, returned as
+Server-Sent Events: `status` (`{"ticker", "message"}`, when an analysis starts),
+`token` (`{"text"}`, the reply as it is written), then always `done` with the
+same JSON `/api/chat` returns. Treat `done.reply` as authoritative.
+
+```bash
+curl -N -X POST http://127.0.0.1:8000/api/chat/stream -H "Content-Type: application/json" -d "{\"message\": \"how is TCS looking?\"}"
+```
+
 `response_type` is `analysis` (an analysis ran this turn), `reply` or `error`.
 Needs the LLM settings from `backend/.env`, and a model that supports tool
 calling (OpenRouter lists this per model); if the model can't be reached the

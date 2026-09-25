@@ -29,6 +29,25 @@ function ResponseBadge({ responseType }: { responseType: string }) {
   );
 }
 
+// Before the first token: bouncing dots, plus the backend's progress status
+// ("Analysing TCS.NS...") while an analysis runs.
+function TypingIndicator({ status }: { status?: string }) {
+  return (
+    <span className="flex items-center gap-2" role="status" aria-live="polite">
+      <span className="flex items-center gap-1 py-1.5">
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400" />
+      </span>
+      {status ? (
+        <span className="text-xs italic text-slate-500 dark:text-slate-400">{status}</span>
+      ) : (
+        <span className="sr-only">Assistant is typing</span>
+      )}
+    </span>
+  );
+}
+
 export default function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.role === "system") {
     return (
@@ -64,7 +83,16 @@ export default function MessageBubble({ message }: { message: ChatMessage }) {
               : "rounded-tl-sm border border-slate-200 bg-white text-slate-800 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100")
           }
         >
-          {message.content}
+          {message.streaming && !message.content ? (
+            <TypingIndicator status={message.status} />
+          ) : (
+            <>
+              {message.content}
+              {message.streaming ? (
+                <span className="ml-0.5 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-slate-400" />
+              ) : null}
+            </>
+          )}
         </div>
         {message.responseType || message.ticker ? (
           <div className="flex items-center gap-1.5 px-1">

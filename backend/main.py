@@ -8,6 +8,9 @@ POST /api/chat           -> free-text message; the Chat Intent & Routing graph's
                             tool-calling agent reads it in the context of the
                             session's conversation, runs the Orchestrator when an
                             analysis is needed, and writes the reply.
+POST /api/chat/stream    -> the same turn as Server-Sent Events: `status` while an
+                            analysis runs, `token` as the reply is written, then
+                            `done` with the same body /api/chat returns.
 POST /api/stock-analysis -> structured request; the ticker is passed as an
                             explicit override, so it skips the agent and returns
                             the Orchestrator's raw final_response.
@@ -17,18 +20,22 @@ Everything else is served from the Next.js static export in frontend/out.
 
 import bootstrap  # noqa: F401  -- .env + OS trust store; must precede env reads
 
+import json
 import uuid
 from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from langchain_core.messages import AIMessage
 from pydantic import BaseModel, Field
 
 from agents.chat_intent_routing import config as chat_config
 from agents.chat_intent_routing.checkpointer import build_checkpointer
 from agents.chat_intent_routing.graph import build_graph as build_chat_intent_routing_graph
 from agents.chat_intent_routing.graph import turn_input
+from agents.chat_intent_routing.nodes.finalize import message_text
 from agents.chat_intent_routing.reply import outcome
 
 app = FastAPI(title="Agentic AI Stock Analysis API")
@@ -115,12 +122,68 @@ def run_chat(request: ChatRequest):
     except Exception as exc:
         print(f"[api] /api/chat failed for session_id={session_id}: {type(exc).__name__}: {exc}", flush=True)
         return ChatResponse(reply=chat_config.ERROR_REPLY, response_type="error", session_id=session_id)
+    return _chat_response(result, session_id)
 
+
+def _chat_response(result, session_id):
     return ChatResponse(
         reply=result.get("reply") or chat_config.ERROR_REPLY,
         response_type=result.get("response_type") or "error",
         session_id=session_id,
         ticker=result.get("resolved_ticker"),
+    )
+
+
+def _sse(event, data):
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def _reply_token(chunk, metadata):
+    """The text of an LLM chunk worth showing: the agent's answer, never a tool
+    call being assembled, and nothing from finalize's bookkeeping."""
+    if metadata.get("langgraph_node") != "agent" or not isinstance(chunk, AIMessage):
+        return None
+    if chunk.tool_calls or getattr(chunk, "tool_call_chunks", None):
+        return None
+    return message_text(chunk.content, strip=False) or None
+
+
+@app.post("/api/chat/stream")
+def run_chat_stream(request: ChatRequest):
+    """/api/chat as Server-Sent Events, one JSON object per `data:` line:
+
+        event: status  {"type": "status", "ticker", "message"}  -- an analysis is starting
+        event: token   {"text"}                                 -- the next piece of the reply
+        event: done    the ChatResponse body, as /api/chat returns it
+
+    `done` is always the last event and its `reply` is authoritative; the tokens
+    before it add up to the same text (a fallback reply -- LLM unavailable, or the
+    template after a failed LLM call -- comes as one token). A failure anywhere
+    still ends in `done`, never a 500.
+    """
+    session_id = request.session_id or str(uuid.uuid4())
+    config = {"configurable": {"thread_id": session_id}}
+    turn = turn_input(user_id=request.user_id, message=request.message, thread_id=session_id)
+
+    def events():
+        try:
+            for mode, payload in chat_intent_routing_graph.stream(turn, config=config, stream_mode=["custom", "messages"]):
+                if mode == "custom":
+                    yield _sse("status", payload)
+                    continue
+                text = _reply_token(*payload)
+                if text:
+                    yield _sse("token", {"text": text})
+            result = chat_intent_routing_graph.get_state(config).values
+            yield _sse("done", _chat_response(result, session_id).model_dump())
+        except Exception as exc:
+            print(f"[api] /api/chat/stream failed for session_id={session_id}: {type(exc).__name__}: {exc}", flush=True)
+            error = ChatResponse(reply=chat_config.ERROR_REPLY, response_type="error", session_id=session_id)
+            yield _sse("done", error.model_dump())
+
+    # X-Accel-Buffering: stops nginx-style proxies holding the stream back until it ends.
+    return StreamingResponse(
+        events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     )
 
 

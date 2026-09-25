@@ -16,6 +16,9 @@ export interface ChatMessage {
   // Only ever set on an "assistant" message built from a ChatApiResponse.
   responseType?: ChatApiResponse["response_type"];
   ticker?: string | null;
+  // Set while an assistant reply is still streaming in (see streamChat).
+  streaming?: boolean;
+  status?: string; // e.g. "Analysing TCS.NS..." -- shown until the first token arrives
 }
 
 // Mirrors backend/main.py's ChatResponse (the POST /api/chat response body)
@@ -25,6 +28,62 @@ export interface ChatApiResponse {
   response_type: "analysis" | "reply" | "error";
   session_id: string;
   ticker?: string | null;
+}
+
+export interface ChatRequestBody {
+  message: string;
+  user_id: string;
+  session_id?: string;
+}
+
+export interface StreamHandlers {
+  onStatus: (message: string) => void;
+  onToken: (text: string) => void;
+}
+
+// POST /api/chat/stream, read as Server-Sent Events (backend/main.py's
+// run_chat_stream): `status` while an analysis runs, `token` pieces of the
+// reply, then always `done` with the same body POST /api/chat returns --
+// resolved here, and authoritative over the tokens. fetch + a stream reader
+// rather than EventSource, which only supports GET.
+export async function streamChat(body: ChatRequestBody, handlers: StreamHandlers): Promise<ChatApiResponse> {
+  const response = await fetch("/api/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`Request failed (${response.status}): ${await response.text()}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+
+    let boundary;
+    while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+      const block = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+
+      let event = "message";
+      let data = "";
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if (!data) continue;
+      const payload = JSON.parse(data);
+
+      if (event === "status") handlers.onStatus(payload.message);
+      else if (event === "token") handlers.onToken(payload.text);
+      else if (event === "done") return payload as ChatApiResponse;
+    }
+  }
+  throw new Error("The response ended before the reply was complete.");
 }
 
 // crypto.randomUUID() is available in every evergreen browser and in the
