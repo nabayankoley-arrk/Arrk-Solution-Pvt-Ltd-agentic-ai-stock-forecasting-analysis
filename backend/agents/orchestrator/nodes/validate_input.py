@@ -7,7 +7,7 @@ graph.py's route_after_validate; this node only decides is_valid/
 validation_error, it doesn't build the error payload itself.
 
 Ticker resolution is not this node's job -- that's
-agents/chat_intent_routing/nodes/interpret.py's, run before this subgraph is
+agents/chat_intent_routing/nodes/tools.py's, run before this subgraph is
 ever invoked. This node just requires a ticker to already be present.
 
 Also resolves horizon into each pillar subgraph's own request shape

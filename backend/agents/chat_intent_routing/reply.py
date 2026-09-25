@@ -1,25 +1,19 @@
-"""Reads a Chat Intent & Routing result, so main.py and respond.py never need
-to know the shape of the Orchestrator's output.
+"""Reads Orchestrator results, so main.py and the agent never need to know
+the shape of the Orchestrator's output.
 
-outcome()               -- how a run ended
-analysis_digest()       -- the user-facing facts of a final_response, for the LLM
+outcome()               -- how a direct (explicit-ticker) analysis ended
+analysis_digest()       -- the user-facing facts of a final_response: analyze_stock's tool result
 format_analysis_reply() -- the same facts as a fixed-template sentence (fallback)
 """
 
 
 def outcome(result):
-    """How a Chat Intent & Routing run ended, read from the graph's own state:
+    """How an Orchestrator run in the graph's state ended:
 
-    reply        -- interpret answered directly (clarification, greeting, ...)
-    out_of_scope -- interpret refused a non-stock question
-    error        -- interpret's LLM call failed
-    analysis     -- the Orchestrator produced a final_response
-    invalid      -- the Orchestrator rejected the input (its error_response)
-    failed       -- the Orchestrator raised; route_to_orchestrator caught it
+    analysis -- it produced a final_response
+    invalid  -- it rejected the input (its error_response)
+    failed   -- it raised; _orchestrator.run_orchestrator caught it
     """
-    action = result.get("action")
-    if action != "analyze":
-        return action or "error"
     orchestrator_result = result.get("orchestrator_result")
     if orchestrator_result is None:
         return "failed"
@@ -136,7 +130,7 @@ def _compact(value, max_chars=600):
 
 
 def analysis_digest(response):
-    """A compact, user-facing view of a final_response for respond.py's LLM prompt."""
+    """A compact, user-facing view of a final_response: analyze_stock's tool result."""
     facts = _facts(response)
     digest = {k: v for k, v in facts.items() if not k.startswith("_")}
     digest["technical"] = _compact(
@@ -157,7 +151,7 @@ def analysis_digest(response):
 
 
 def format_analysis_reply(response):
-    """The fixed-template chat reply, used when respond.py's LLM call fails."""
+    """The fixed-template chat reply, used when the agent's LLM call fails."""
     facts = _facts(response)
     ticker = facts["ticker"]
 

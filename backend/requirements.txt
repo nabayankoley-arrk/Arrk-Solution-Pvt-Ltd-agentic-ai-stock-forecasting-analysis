@@ -2,6 +2,8 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 pydantic>=2.6
 langgraph>=0.1
+# chat agent's tool-calling model -- agents/chat_intent_routing/llm.py
+langchain-openai>=0.3
 # chat conversation memory -- agents/chat_intent_routing/checkpointer.py
 langgraph-checkpoint-postgres>=3.0
 psycopg[binary,pool]>=3.2

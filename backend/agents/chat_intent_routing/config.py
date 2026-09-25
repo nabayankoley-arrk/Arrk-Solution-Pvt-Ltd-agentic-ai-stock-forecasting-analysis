@@ -1,7 +1,7 @@
 """Tunable constants for the Chat Intent & Routing subgraph.
 
-MEMORY_ENABLED and MAX_HISTORY_TURNS are read from the environment, falling
-back to the defaults below when unset.
+MEMORY_ENABLED, MAX_HISTORY_MESSAGES and MAX_TOOL_ROUNDS are read from the
+environment, falling back to the defaults below when unset.
 """
 
 import bootstrap  # noqa: F401  -- .env + OS trust store; must precede env reads
@@ -25,8 +25,11 @@ def _env_bool(name, default):
 MEMORY_ENABLED = _env_bool("MEMORY_ENABLED", True)
 
 
-# --- interpret / respond: how many past turns (user + assistant) go into a prompt ---
-MAX_HISTORY_TURNS = _env_int("MAX_HISTORY_TURNS", 6)
+# --- agent: how many past messages (user, assistant, tool) go into a prompt ---
+MAX_HISTORY_MESSAGES = _env_int("MAX_HISTORY_MESSAGES", 20)
+
+# --- agent: rounds of tool calls allowed per turn before it must answer ---
+MAX_TOOL_ROUNDS = _env_int("MAX_TOOL_ROUNDS", 3)
 
 # --- replies used when an LLM or the Orchestrator fails ---
 UNAVAILABLE_REPLY = "The assistant is temporarily unavailable -- please try again in a moment."

@@ -1,9 +1,9 @@
 """_ticker_lookup — the companies this system can analyse, from `universe`.
 
-tracked_companies() gives interpret's LLM the list to choose from, and
-resolve_ticker_from_text() maps what the LLM returned ("Infosys", "TCS") back
-to an exact NSE ticker ("INFY.NS"), so a hallucinated or loosely named company
-never reaches the Orchestrator.
+tracked_companies() gives the agent's prompt the list to choose from, and
+resolve_tracked_ticker() maps what the LLM passed to analyze_stock ("Infosys",
+"TCS") back to an exact NSE ticker ("INFY.NS"), so a hallucinated or loosely
+named company never reaches the Orchestrator.
 
 Name matching, both built from the same `universe` query:
   1. Bare ticker symbol ("TCS", "INFY", "M&M") as a whole word, case-insensitive.
@@ -127,3 +127,16 @@ def resolve_ticker_from_text(message):
                 return ticker
 
     return None
+
+
+def resolve_tracked_ticker(raw):
+    """The tracked NSE ticker `raw` refers to -- an exact ticker, a bare symbol
+    ("TCS") or a company name ("Infosys") -- or None. When `universe` cannot be
+    read, `raw` is passed through as-is and the Orchestrator decides."""
+    if not raw:
+        return None
+    candidate = str(raw).strip().upper()
+    tracked = {ticker.upper(): ticker for ticker, _ in tracked_companies()}
+    if not tracked:
+        return candidate
+    return tracked.get(candidate) or tracked.get(f"{candidate}.NS") or resolve_ticker_from_text(str(raw))

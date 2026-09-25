@@ -22,7 +22,7 @@ export interface ChatMessage {
 // field for field, including the snake_case key FastAPI actually returns.
 export interface ChatApiResponse {
   reply: string;
-  response_type: "analysis" | "reply" | "out_of_scope" | "error";
+  response_type: "analysis" | "reply" | "error";
   session_id: string;
   ticker?: string | null;
 }

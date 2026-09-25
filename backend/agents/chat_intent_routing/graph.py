@@ -1,58 +1,69 @@
-"""Assembles the Chat Intent & Routing subgraph.
+"""Assembles the Chat Intent & Routing subgraph: a tool-calling chat agent.
 
-    START -> interpret
-               |- action='analyze' -> route_to_orchestrator -> respond -\
-               `- otherwise (reply / out_of_scope / error) ---------------+-> persist_conversation_turn -> END
+    START -> agent <-> tools            (loops while the agent calls tools)
+               `-> finalize -\\
+    START -> direct_analysis --+-> persist_conversation_turn -> END
 
-interpret (LLM) reads the message in the context of the conversation and
-decides; respond (LLM) writes the answer from the Orchestrator's result.
-Any other action already carries interpret's reply.
+agent (LLM) reads the conversation, calls analyze_stock when it needs an
+analysis, and answers once it has what it needs. A caller-supplied ticker
+(POST /api/stock-analysis) takes the direct_analysis path instead: no LLM.
 
 Conversation memory is the checkpointer (see checkpointer.py): invoke with
 config={"configurable": {"thread_id": session_id}} and `messages` and
 `current_ticker` carry over between turns. Every other field is per-turn, so
 callers start each turn from turn_input(), which resets them -- otherwise a
-checkpointed value from the previous turn (a response, a reply) would leak
+checkpointed value from the previous turn (a reply, an analysis) would leak
 into this one.
 """
 
+from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, StateGraph
 
-from .nodes.interpret import interpret
+from .nodes.agent import agent
+from .nodes.direct_analysis import direct_analysis
+from .nodes.finalize import finalize
 from .nodes.persist_conversation_turn import persist_conversation_turn
-from .nodes.respond import respond
-from .nodes.route_to_orchestrator import route_to_orchestrator
+from .nodes.tools import tools
 from .state import ChatIntentRoutingState
 
 _PER_TURN_FIELDS = (
-    "ticker", "horizon", "forecast_days", "thread_id",
-    "action", "resolved_ticker", "routing_reason", "orchestrator_result", "response", "reply",
+    "ticker", "horizon", "forecast_days", "thread_id", "message",
+    "tool_rounds", "analyses",
+    "action", "reply", "response_type", "resolved_ticker", "orchestrator_result", "response",
 )
 
 
 def turn_input(**fields):
-    """Input for one turn: the given fields, every other per-turn field reset."""
-    return {**dict.fromkeys(_PER_TURN_FIELDS), **fields}
+    """Input for one turn: the given fields, every other per-turn field reset.
+    A chat message is also appended to the conversation."""
+    turn = {**dict.fromkeys(_PER_TURN_FIELDS), **fields}
+    if fields.get("message") and not fields.get("ticker"):
+        turn["messages"] = [HumanMessage(fields["message"])]
+    return turn
 
 
-def route_after_interpret(state: ChatIntentRoutingState) -> str:
-    return "route_to_orchestrator" if state.get("action") == "analyze" else "persist_conversation_turn"
+def route_start(state: ChatIntentRoutingState) -> str:
+    return "direct_analysis" if state.get("ticker") else "agent"
+
+
+def route_after_agent(state: ChatIntentRoutingState) -> str:
+    return "tools" if getattr(state["messages"][-1], "tool_calls", None) else "finalize"
 
 
 def build_graph(checkpointer=None):
     graph = StateGraph(ChatIntentRoutingState)
 
-    graph.add_node("interpret", interpret)
-    graph.add_node("route_to_orchestrator", route_to_orchestrator)
-    graph.add_node("respond", respond)
+    graph.add_node("agent", agent)
+    graph.add_node("tools", tools)
+    graph.add_node("finalize", finalize)
+    graph.add_node("direct_analysis", direct_analysis)
     graph.add_node("persist_conversation_turn", persist_conversation_turn)
 
-    graph.add_edge(START, "interpret")
-    graph.add_conditional_edges(
-        "interpret", route_after_interpret, ["route_to_orchestrator", "persist_conversation_turn"]
-    )
-    graph.add_edge("route_to_orchestrator", "respond")
-    graph.add_edge("respond", "persist_conversation_turn")
+    graph.add_conditional_edges(START, route_start, ["agent", "direct_analysis"])
+    graph.add_conditional_edges("agent", route_after_agent, ["tools", "finalize"])
+    graph.add_edge("tools", "agent")
+    graph.add_edge("finalize", "persist_conversation_turn")
+    graph.add_edge("direct_analysis", "persist_conversation_turn")
     graph.add_edge("persist_conversation_turn", END)
 
     return graph.compile(checkpointer=checkpointer)

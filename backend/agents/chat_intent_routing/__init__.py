@@ -1,9 +1,9 @@
 """Chat Intent & Routing subgraph.
 
-The chat layer (see graph.py for the node order). An LLM (nodes/interpret.py)
-reads each message in the context of the conversation and decides whether to
-answer directly, refuse, or run the Orchestrator Subgraph; after an analysis a
-second LLM call (nodes/respond.py) writes the answer.
+The chat layer: a tool-calling agent (see graph.py). The LLM (nodes/agent.py)
+reads each message in the context of the conversation, calls analyze_stock
+(nodes/tools.py, which runs the Orchestrator Subgraph) when it needs an
+analysis, and writes the reply.
 
 Conversation memory is the checkpointer (checkpointer.py), keyed on session_id:
 it restores the session's messages and the company under discussion

@@ -5,12 +5,12 @@ Run from inside `backend/`:
     python -m uvicorn main:app --reload
 
 POST /api/chat           -> free-text message; the Chat Intent & Routing graph's
-                            LLM reads it in the context of the session's
-                            conversation, runs the Orchestrator when an analysis
-                            is needed, and writes the reply.
+                            tool-calling agent reads it in the context of the
+                            session's conversation, runs the Orchestrator when an
+                            analysis is needed, and writes the reply.
 POST /api/stock-analysis -> structured request; the ticker is passed as an
-                            explicit override, so it skips both LLM calls and
-                            returns the Orchestrator's raw final_response.
+                            explicit override, so it skips the agent and returns
+                            the Orchestrator's raw final_response.
 
 Everything else is served from the Next.js static export in frontend/out.
 """
@@ -56,7 +56,7 @@ class StockAnalysisRequest(BaseModel):
 
 @app.post("/api/stock-analysis")
 def run_stock_analysis(request: StockAnalysisRequest):
-    """An explicit ticker skips interpret's LLM and goes straight to the
+    """An explicit ticker skips the agent and goes straight to the
     Orchestrator. A throwaway checkpoint thread, deleted afterwards: there is
     no conversation to keep. `message` is only a label for conversation_history."""
     thread_id = f"stock-analysis-{uuid.uuid4()}"
@@ -80,7 +80,7 @@ def run_stock_analysis(request: StockAnalysisRequest):
     if result_outcome == "analysis":
         return response
     if result_outcome == "failed":
-        # route_to_orchestrator's reason carries the raw exception text: log it, don't return it.
+        # run_orchestrator's reason carries the raw exception text: log it, don't return it.
         print(f"[api] orchestrator failed for {request.stock_name}: {response.get('reason')}", flush=True)
         raise HTTPException(status_code=502, detail={"ticker": request.stock_name, "reason": "Analysis failed."})
     reason = response.get("reason")
@@ -98,7 +98,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
-    response_type: Literal["analysis", "reply", "out_of_scope", "error"]
+    response_type: Literal["analysis", "reply", "error"]
     session_id: str
     ticker: Optional[str] = None
 
@@ -116,11 +116,9 @@ def run_chat(request: ChatRequest):
         print(f"[api] /api/chat failed for session_id={session_id}: {type(exc).__name__}: {exc}", flush=True)
         return ChatResponse(reply=chat_config.ERROR_REPLY, response_type="error", session_id=session_id)
 
-    result_outcome = outcome(result)
-    response_type = result_outcome if result_outcome in ("analysis", "reply", "out_of_scope") else "error"
     return ChatResponse(
         reply=result.get("reply") or chat_config.ERROR_REPLY,
-        response_type=response_type,
+        response_type=result.get("response_type") or "error",
         session_id=session_id,
         ticker=result.get("resolved_ticker"),
     )

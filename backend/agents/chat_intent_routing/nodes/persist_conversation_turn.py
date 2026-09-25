@@ -1,6 +1,6 @@
 """persist_conversation_turn — audit-log node.
 
-Appends this turn (the caller's message, the action taken and the reply) to
+Appends this turn (the caller's message, the outcome and the reply) to
 "Memory".conversation_history. Runs on every turn, whatever the action. This is
 an audit trail only: the conversation itself is restored from the checkpointer.
 

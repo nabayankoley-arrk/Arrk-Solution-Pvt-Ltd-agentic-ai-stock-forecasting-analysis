@@ -23,7 +23,7 @@ under backend/ml/, decoupled from the orchestrator so it can be wired back
 in later without reworking this graph.
 
 This subgraph has no user or conversation concerns: agents/chat_intent_routing
-resolves the ticker before calling in (see its nodes/route_to_orchestrator.py).
+resolves the ticker before calling in (see its nodes/_orchestrator.py).
 
 An optional forecast_days input (see state.py's note on that field) rides
 alongside ticker/horizon without adding a graph node: build_final_response

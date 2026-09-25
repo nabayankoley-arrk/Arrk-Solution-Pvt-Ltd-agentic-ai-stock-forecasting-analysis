@@ -232,10 +232,11 @@ Serves the frontend at <http://127.0.0.1:8000/> and Swagger at `/docs`.
 
 ### Endpoints
 
-`POST /api/chat` — free-text chat, answered by an LLM. Only `message` is
-required. It reads the message in the context of the conversation so far,
-decides whether to answer directly, ask a clarifying question, refuse an
-off-topic question, or run an analysis, and writes the reply.
+`POST /api/chat` — free-text chat, answered by a tool-calling LLM agent. Only
+`message` is required. It reads the message in the context of the conversation
+so far and either answers directly (clarifying questions, off-topic refusals,
+follow-ups on earlier results) or calls its `analyze_stock` tool — once per
+company, so comparisons work — and answers from the result.
 
 - **`session_id`** is the conversation. Omit it on the first message and send
   back the returned one: earlier turns and the company under discussion are
@@ -249,9 +250,10 @@ off-topic question, or run an analysis, and writes the reply.
 {"user_id": "your-name", "message": "how is TCS looking today?"}
 ```
 
-`response_type` is `analysis`, `reply` (clarification, greeting, answer from
-earlier in the conversation), `out_of_scope` or `error`. Needs the LLM settings
-from `backend/.env`; if the model can't be reached the reply says so.
+`response_type` is `analysis` (an analysis ran this turn), `reply` or `error`.
+Needs the LLM settings from `backend/.env`, and a model that supports tool
+calling (OpenRouter lists this per model); if the model can't be reached the
+reply says so.
 
 `POST /api/stock-analysis` — structured; `stock_name` is the only required
 field. Supply `forecast_days` for an LLM-reasoned price range (a qualitative
