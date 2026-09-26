@@ -3,7 +3,8 @@
 Sets the fields main.py returns: `reply` (the agent's answer), `response_type`
 ('analysis' if an analysis finished this turn, 'error' if the LLM failed,
 otherwise 'reply'), and `resolved_ticker`/`response` from the turn's last
-analysis, for the ChatResponse and the audit log.
+analysis, for the ChatResponse and the audit log. The Orchestrator's full
+state is deliberately not kept: it would be checkpointed on every turn.
 """
 
 from langchain_core.messages import AIMessage
@@ -24,9 +25,7 @@ def message_text(content, strip=True):
 def finalize(state):
     last = state["messages"][-1]
     analyses = state.get("analyses") or []
-    finished = [
-        a for a in analyses if a.get("orchestrator_result") and a["orchestrator_result"].get("final_response")
-    ]
+    finished = [a for a in analyses if a.get("ok")]
 
     if state.get("action") == "error":
         response_type = "error"
@@ -49,6 +48,5 @@ def finalize(state):
         "response_type": response_type,
         "action": response_type,
         "resolved_ticker": latest.get("ticker"),
-        "orchestrator_result": latest.get("orchestrator_result"),
         "response": latest.get("response"),
     }

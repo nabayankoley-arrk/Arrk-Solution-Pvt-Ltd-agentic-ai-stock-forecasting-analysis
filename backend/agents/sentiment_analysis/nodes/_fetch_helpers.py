@@ -54,6 +54,10 @@ def fetch_latest_document(ticker, report_type, lookback_months):
             last_error = exc
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY_SECONDS)
+        except psycopg2.Error as exc:
+            # Not transient -- e.g. a column missing because db/schema.sql
+            # was not re-applied. Retrying would not help.
+            return None, "error", f"database query failed: {str(exc).strip()[:200]}"
     else:
         return None, "error", f"database connection failed: {last_error}"
 

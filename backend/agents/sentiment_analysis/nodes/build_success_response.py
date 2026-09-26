@@ -1,47 +1,61 @@
 """build_success_response — terminal node.
 
-Assembles the composite call, thematic summary, and citations into the
-final payload, per the specification's Final Response section:
-ticker, overall call, source-level breakdown, recency-weighted
-confidence, citations, and availability status per source (which feeds
-the Orchestrator's own pillar_status -- see
-agents/orchestrator/nodes/_pillar_runners.run_sentiment).
+The pillar's result: the combined direction, a one-paragraph summary, and per
+source the document it came from and its sentiment profile (label,
+management tone, guidance, themes, positives, concerns, quotes). The stored
+summary text itself is left out -- this output goes into the Orchestrator's
+reconciliation prompt on every run -- and is read from the graph's state by
+callers that need it (agents/chat_intent_routing's get_filing_sentiment tool).
 """
 
 import datetime
 
-_SOURCE_LABELS = {"transcript": "Transcript tone", "annual_report": "Annual report"}
+from .combine_sentiment_signals import SOURCES
+
+_SOURCE_LABELS = {"transcript": "Call transcript", "annual_report": "Annual report"}
 
 
-def _thematic_summary(state):
+def _source(score, doc, status):
+    if not doc:
+        return {"status": status}
+    entry = {
+        "status": status,
+        "document": doc.get("report_name"),
+        "filed_on": str(doc["filed_on"]) if doc.get("filed_on") else None,
+        "citation": (score or {}).get("citation"),
+    }
+    if score and score.get("profile"):
+        entry.update(score["profile"])
+    elif score and score.get("error"):
+        entry.update(status="error", error=score["error"])  # found, but could not be scored
+    return entry
+
+
+def _summary(sources):
     parts = []
-    for source, state_key in (("transcript", "transcript_tone"), ("annual_report", "annual_report_sentiment")):
-        score = state.get(state_key)
-        if not score or not score.get("label"):
-            continue
-        rationale = score.get("rationale") or ""
-        parts.append(f"{_SOURCE_LABELS[source]} ({score['label']}): {rationale}".strip())
-
-    if not parts:
-        return "No transcript or annual-report sentiment was available for this ticker."
-    return " ".join(parts)
+    for source, entry in sources.items():
+        if entry.get("label"):
+            tone = f", management {entry['management_tone']}" if entry.get("management_tone") else ""
+            parts.append(f"{_SOURCE_LABELS[source]} ({entry['label']}{tone}): {entry.get('rationale') or ''}".strip())
+    return " ".join(parts) or "No transcript or annual-report sentiment was available for this ticker."
 
 
 def build_success_response(state):
     combined = state.get("combined_sentiment") or {}
     pillar_status = state.get("pillar_status") or {}
-
-    final_output = {
-        "ticker": state.get("ticker"),
-        "as_of_date": datetime.date.today().isoformat(),
-        "direction": combined.get("direction"),
-        "confidence": combined.get("confidence"),
-        "summary": _thematic_summary(state),
-        "source_breakdown": combined.get("source_breakdown"),
-        "citations": combined.get("citations"),
-        "source_status": {
-            "transcript": pillar_status.get("transcript"),
-            "annual_report": pillar_status.get("annual_report"),
-        },
+    sources = {
+        source: _source(state.get(score_key), state.get(doc_key), pillar_status.get(source))
+        for source, (score_key, doc_key) in SOURCES.items()
     }
-    return {"final_output": final_output}
+    return {
+        "final_output": {
+            "ticker": state.get("ticker"),
+            "as_of_date": datetime.date.today().isoformat(),
+            "direction": combined.get("direction"),
+            "score": combined.get("score"),
+            "coverage": combined.get("coverage"),
+            "summary": _summary(sources),
+            "sources": sources,
+            "source_status": {source: entry["status"] for source, entry in sources.items()},
+        }
+    }

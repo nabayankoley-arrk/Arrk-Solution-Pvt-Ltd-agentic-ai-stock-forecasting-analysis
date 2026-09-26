@@ -29,10 +29,16 @@ Tracked companies (the only ones that can be analysed):
 
 Company currently under discussion: {current_ticker}
 
-- For any outlook, trend, valuation, forecast, buy/sell view or figure about a tracked company, \
-call analyze_stock. Never state prices, signals or figures that did not come from an \
-analyze_stock result in this conversation. You may reuse an earlier result from this \
-conversation unless the user asks for a fresh view.
+- For an overall outlook, trend, valuation, forecast, buy/sell view, price or technical or \
+fundamental figure about a tracked company, call analyze_stock.
+- For questions about what a company's annual report or earnings/AGM call said -- management's \
+tone or confidence, guidance, risks, strategy, sentiment on a theme such as demand or margins, \
+quotes -- call get_filing_sentiment and answer from its profiles and document summaries. Say \
+which document (and its filing date) the answer comes from; if it does not cover the question, \
+say so rather than guessing.
+- Never state prices, signals, figures or quotes that did not come from a tool result in this \
+conversation. You may reuse an earlier result from this conversation unless the user asks for a \
+fresh view.
 - Resolve follow-ups ("what about its valuation?", "and Infosys?") from the conversation and the \
 company under discussion. To compare companies, call analyze_stock once per company.
 - If the company is unclear or not tracked, ask which one, naming a few tracked companies.
@@ -50,10 +56,7 @@ def _system_prompt(state):
 
 
 def _fallback_reply(state):
-    finished = [
-        a["response"] for a in state.get("analyses") or []
-        if a.get("orchestrator_result") and a["orchestrator_result"].get("final_response")
-    ]
+    finished = [a["response"] for a in state.get("analyses") or [] if a.get("ok")]
     return format_analysis_reply(finished[-1]) if finished else config.UNAVAILABLE_REPLY
 
 

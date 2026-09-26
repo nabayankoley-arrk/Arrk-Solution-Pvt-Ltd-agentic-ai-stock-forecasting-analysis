@@ -1,16 +1,52 @@
 # Arrk-Solution-Pvt-Ltd-agentic-ai-stock-forecasting-analysis
-AI-powered stock forecasting and analysis platform leveraging Large Language Models (LLMs), agentic AI workflows, market data, technical indicators, news sentiment, and fundamental analysis to generate explainable investment insights and support data-driven financial decision-making.
+AI-powered stock forecasting and analysis platform leveraging Large Language Models (LLMs), agentic AI workflows, market data, technical indicators, sentiment from annual reports and earnings-call transcripts, and fundamental analysis to generate explainable investment insights and support data-driven financial decision-making.
 
 ## Project layout
 
 | Path | What |
 | --- | --- |
 | `backend/` | FastAPI app (`main.py`), LangGraph agents, Postgres layer, document fetcher, jobs. **Every Python command runs from here.** |
-| `backend/agents/` | Chat intent routing, orchestrator, and the technical / fundamental / sentiment analysis subgraphs |
+| `backend/agents/` | The chat agent (`chat_intent_routing/`), the orchestrator, and the technical / fundamental / sentiment analysis subgraphs |
 | `backend/db/` | Schema, connection, seed scripts |
 | `backend/ingestion/` | BSE / company-website PDF fetcher ([Document fetcher](#document-fetcher)) |
 | `backend/jobs/` | Manually-run jobs ([Jobs](#jobs)) |
 | `frontend/` | Next.js chat UI, built as a static export and served by `backend/main.py` |
+
+## How it works
+
+```
+frontend (chat UI) --POST /api/chat/stream--> backend/main.py
+                                                  |
+   agents/chat_intent_routing  -- LangGraph tool-calling agent, conversation in a Postgres checkpointer
+       |- analyze_stock(ticker)        -> agents/orchestrator
+       |                                    |- technical_analysis    (rules, "Technical".price_history)
+       |                                    |- fundamental_analysis  (rules, financial_statements)
+       |                                    |- sentiment_analysis    (document_summaries)
+       |                                    `- reconciles the three pillars, optional human review
+       `- get_filing_sentiment(ticker) -> agents/sentiment_analysis only
+```
+
+The chat agent reads each message in the context of the session, decides
+whether to answer directly, ask which company, refuse an off-topic question or
+call a tool, and writes the reply from the tool results. `analyze_stock` gives
+the overall picture (price, signals, support/resistance, all three pillars);
+`get_filing_sentiment` answers questions about what the latest annual report
+and call transcript said — management tone, guidance, risks, themes, quotes.
+
+### Where the LLM is used
+
+Technical and fundamental analysis make no LLM calls. Every prompt:
+
+| Prompt | File (under `backend/`) | When it runs |
+| --- | --- | --- |
+| Chat agent | `agents/chat_intent_routing/nodes/agent.py`, tool descriptions in `nodes/tools.py` | Every chat turn, again after each tool call |
+| Sentiment profile | `agents/sentiment_analysis/prompts.py` | Once per stored filing summary (and per `PROMPT_VERSION`); cached afterwards |
+| Pillar reconciliation | `agents/orchestrator/llm_client.py` | Each analysis |
+| Price-range forecast | `agents/orchestrator/forecast_price_range.py` | Only with `forecast_days` (`/api/stock-analysis`) |
+| Filing summaries | `ingestion/summarise.py` | Offline, in `jobs/summarise_reports` |
+
+All use the provider and model from `backend/.env` (`LLM_PROVIDER`,
+`OPENROUTER_MODEL`). The chat agent needs a model with tool calling.
 
 ## Setup
 
@@ -32,6 +68,16 @@ docker cp backend/db/schema.sql stock-analysis-pg:/tmp/schema.sql && docker exec
 
 Needs no `psql` on your PATH. Against a server you already have, run
 `psql "$DATABASE_URL" -f backend/db/schema.sql` instead.
+
+After pulling a change to `schema.sql`, re-apply it from `backend/`. It only
+creates or adds what is missing, so it is safe to repeat:
+
+```bash
+python -m db.apply_schema
+```
+
+The chat's conversation checkpoints live in LangGraph's own tables, which the
+API creates on first startup.
 
 #### 2. Configure `backend/.env`
 
@@ -102,8 +148,11 @@ and open `http://127.0.0.1:8000/`. Re-run `npm run build` after any frontend
 change and refresh the page — StaticFiles reads from disk on every request,
 so no backend restart is needed.
 
+The chat streams its replies from `POST /api/chat/stream`: a status line while
+an analysis runs ("Analysing TCS.NS..."), then the reply word by word.
+
 `npm run dev` (plain Next dev server on port 3000) also works for fast UI
-iteration, but its `/api/chat` calls will 404 since nothing serves the
+iteration, but its `/api/chat/stream` calls will 404 since nothing serves the
 backend on that same origin in dev mode — use it for layout/markup work,
 and `npm run build` + the FastAPI-served page for anything that needs a
 real API response.
@@ -200,11 +249,24 @@ in `backend/.env` (the job reuses `agents/orchestrator/llm_client`) — see
 [Jobs](#jobs) for the full prerequisites, table layout, and how it
 handles annual reports too large for one model call.
 
-It addresses companies by **unsuffixed BSE ticker** (`TCS`), while the rest of
-the system uses the NSE suffix (`TCS.NS`); `document_summaries` has no foreign
-key to `universe` for that reason. It downloads PDFs from BSE and makes one LLM
-call per document, so expect it to be slow on a first run, and to hit the same
-transient rate limits noted under Fundamentals above.
+The job addresses companies by **unsuffixed BSE ticker** (`TCS`), while the
+rest of the system uses the NSE suffix (`TCS.NS`); `document_summaries` has no
+foreign key to `universe` for that reason. It downloads PDFs from BSE and makes
+one LLM call per document, so expect it to be slow on a first run, and to hit
+the same transient rate limits noted under Fundamentals above.
+
+At request time the sentiment pillar reads the latest stored transcript (up to
+6 months old) and annual report (up to 15 months) and gives each summary a
+**sentiment profile**: overall label (bullish / neutral / bearish), management
+tone (confident / cautious / defensive, or unknown when the summary does not
+show it), guidance, per-theme stances (demand, margins, capital allocation,
+risks, governance…), positives, concerns and quotes. It takes one LLM call the
+first time and is cached on the row after that. The two labels are combined
+into one recency-weighted direction.
+
+The prompt is in `backend/agents/sentiment_analysis/prompts.py`. Bump
+`PROMPT_VERSION` when you change it: each document's profile is rebuilt on the
+next request for it. The profile columns need `python -m db.apply_schema` once.
 
 ## Running the API
 
@@ -232,11 +294,13 @@ Serves the frontend at <http://127.0.0.1:8000/> and Swagger at `/docs`.
 
 ### Endpoints
 
-`POST /api/chat` — free-text chat, answered by a tool-calling LLM agent. Only
-`message` is required. It reads the message in the context of the conversation
-so far and either answers directly (clarifying questions, off-topic refusals,
-follow-ups on earlier results) or calls its `analyze_stock` tool — once per
-company, so comparisons work — and answers from the result.
+`POST /api/chat` — free-text chat, answered by a tool-calling LLM agent (see
+[How it works](#how-it-works)). Only `message` is required. It reads the
+message in the context of the conversation so far and either answers directly
+(clarifying questions, off-topic refusals, follow-ups on earlier results) or
+calls a tool — `analyze_stock` for the overall picture, `get_filing_sentiment`
+for questions about the annual report or call transcript — once per company,
+so comparisons work.
 
 - **`session_id`** is the conversation. Omit it on the first message and send
   back the returned one: earlier turns and the company under discussion are
@@ -251,7 +315,7 @@ company, so comparisons work — and answers from the result.
 ```
 
 `POST /api/chat/stream` takes the same body and runs the same turn, returned as
-Server-Sent Events: `status` (`{"ticker", "message"}`, when an analysis starts),
+Server-Sent Events: `status` (`{"ticker", "message"}`, when a tool call starts),
 `token` (`{"text"}`, the reply as it is written), then always `done` with the
 same JSON `/api/chat` returns. Treat `done.reply` as authoritative.
 
@@ -635,10 +699,12 @@ One table, `document_summaries`, defined in [db/schema.sql](backend/db/schema.sq
 | `sha256` | Of the PDF bytes. **Unique** — this is what makes reruns safe |
 | `page_count`, `char_count` | What was fed to the model |
 | `summary`, `model` | The output, and which model produced it |
+| `sentiment_profile`, `sentiment_label`, `sentiment_rationale` | Written by the sentiment analysis at request time, not by this job |
+| `sentiment_prompt_version`, `sentiment_model`, `sentiment_scored_at` | Which profile prompt and model built them, and when |
 | `created_at`, `updated_at` | |
 
-`document_summaries` is the only table this work adds; the other twelve in
-`schema.sql` belong to the agents and the chat router. The reads and writes for
+`document_summaries` is the only table this work adds; the others in
+`schema.sql` belong to the agents. The reads and writes for
 it live in [db/upsert.py](backend/db/upsert.py) alongside the rest
 (`save_document_summary`, `existing_document_checksums`,
 `latest_document_summary`, `report_type_for`).

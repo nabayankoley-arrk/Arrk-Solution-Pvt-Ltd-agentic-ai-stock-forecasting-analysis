@@ -142,7 +142,7 @@ def analysis_digest(response):
     digest["fundamental"] = _compact(facts["_fundamental"])
     if "sentiment" not in facts["unavailable_pillars"]:
         digest["sentiment"] = _compact(
-            {key: facts["_sentiment"].get(key) for key in ("direction", "confidence", "summary", "source_breakdown")}
+            {key: facts["_sentiment"].get(key) for key in ("direction", "coverage", "summary", "sources")}
         )
     forecast = response.get("price_forecast")
     if forecast and not forecast.get("unavailable"):

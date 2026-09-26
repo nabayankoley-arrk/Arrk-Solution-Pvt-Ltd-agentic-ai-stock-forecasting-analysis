@@ -21,12 +21,12 @@ class ChatIntentRoutingState(TypedDict, total=False):
 
     # --- agent / tools (per turn) ---
     tool_rounds: Optional[int]  # rounds of tool calls so far this turn
-    analyses: Optional[list]  # [{"ticker", "orchestrator_result", "response"}, ...] run this turn
+    analyses: Optional[list]  # [{"ticker", "ok", "response"}, ...] run this turn
 
     # --- output (per turn) ---
     action: Optional[str]  # 'analysis' | 'reply' | 'error' (chat); 'analyze' (explicit ticker)
     reply: Optional[str]  # the chat reply
     response_type: Optional[str]  # 'analysis' | 'reply' | 'error'
     resolved_ticker: Optional[str]  # the last ticker analysed this turn
-    orchestrator_result: Optional[dict]  # its Orchestrator final state; None if it raised
+    orchestrator_result: Optional[dict]  # direct_analysis only: the Orchestrator's final state; None if it raised
     response: Optional[dict]  # its final_response or error_response

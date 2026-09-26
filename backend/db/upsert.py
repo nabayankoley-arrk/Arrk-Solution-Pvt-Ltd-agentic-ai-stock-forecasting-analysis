@@ -336,6 +336,7 @@ def latest_document_summary(scrip_code, report_type):
 
 
 _DOCUMENT_SUMMARY_BY_TICKER_COLUMNS = (
+    "company_name",
     "report_name",
     "filed_on",
     "summary",
@@ -343,8 +344,8 @@ _DOCUMENT_SUMMARY_BY_TICKER_COLUMNS = (
     "sha256",
     "model",
     "created_at",
-    "sentiment_label",
-    "sentiment_rationale",
+    "sentiment_profile",
+    "sentiment_prompt_version",
 )
 
 
@@ -360,10 +361,10 @@ def latest_document_summary_by_ticker(ticker, report_type):
     before calling this. Hence two lookups over one table rather than making
     either caller translate between registries.
 
-    Returns a dict, or None when nothing is stored. `sentiment_label` and
-    `sentiment_rationale` come back so _score_helpers.py can serve a cached
-    verdict without a second query; both are NULL until save_document_sentiment
-    fills them in.
+    Returns a dict, or None when nothing is stored. `sentiment_profile` and
+    `sentiment_prompt_version` come back so _score_helpers.py can serve a
+    cached profile without a second query; both are NULL until
+    save_document_sentiment fills them in.
     """
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -382,16 +383,11 @@ def latest_document_summary_by_ticker(ticker, report_type):
     return dict(zip(_DOCUMENT_SUMMARY_BY_TICKER_COLUMNS, row))
 
 
-def save_document_sentiment(sha256, label, rationale, model):
-    """Caches one document's LLM sentiment verdict back onto its own row, so
-    the next request for it is served without paying for the call again (see
-    agents/sentiment_analysis/nodes/_score_helpers.py, which calls this
-    best-effort and still returns the score if it fails).
-
-    Keyed on sha256 -- document_summaries' natural key for a specific PDF, and
-    UNIQUE -- so re-summarising the same file overwrites rather than
-    duplicating. A sha256 with no matching row updates nothing and raises
-    nothing; the caller has the score either way.
+def save_document_sentiment(sha256, profile, prompt_version, model):
+    """Stores one document's sentiment profile (agents/sentiment_analysis/
+    profile.py) on its own row, so it is built once per document and prompt
+    version. Keyed on sha256; a sha256 with no matching row updates nothing and
+    raises nothing -- callers still have the profile either way.
     """
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -399,10 +395,13 @@ def save_document_sentiment(sha256, label, rationale, model):
             UPDATE document_summaries
             SET sentiment_label = %s,
                 sentiment_rationale = %s,
+                sentiment_profile = %s,
+                sentiment_prompt_version = %s,
                 sentiment_model = %s,
                 sentiment_scored_at = NOW(),
                 updated_at = NOW()
             WHERE sha256 = %s
             """,
-            (label, rationale, model, sha256),
+            (profile["label"], profile["rationale"], Json(profile), prompt_version, model, sha256),
         )
+

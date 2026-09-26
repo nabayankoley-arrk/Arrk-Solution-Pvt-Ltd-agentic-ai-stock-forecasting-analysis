@@ -46,7 +46,7 @@ def _env_bool(name, default):
 TRANSCRIPT_LOOKBACK_MONTHS = _env_int("SENTIMENT_TRANSCRIPT_LOOKBACK_MONTHS", 6)
 ANNUAL_REPORT_LOOKBACK_MONTHS = _env_int("SENTIMENT_ANNUAL_REPORT_LOOKBACK_MONTHS", 15)
 
-# --- score_transcript_tone / score_annual_report_sentiment ---
+# --- score_transcript / score_annual_report: rebuild a missing or outdated profile at request time ---
 RESCORE_ON_CACHE_MISS = _env_bool("SENTIMENT_RESCORE_ON_CACHE_MISS", True)
 
 # --- combine_sentiment_signals ---
