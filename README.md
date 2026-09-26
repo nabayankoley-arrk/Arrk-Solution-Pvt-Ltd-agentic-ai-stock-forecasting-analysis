@@ -66,6 +66,13 @@ with a LangGraph interrupt and asks which one, listing tracked companies first;
 untracked ones are shown but cannot be analysed. Matching uses the tracked
 companies plus BSE's list of listed equities.
 
+A company that is not tracked ("Tata Steel", "Zomato") gets **recent web news**
+instead of an analysis (`nodes/web_search.py`): up to five dated results from
+reputable financial news sites and the exchanges (`WEB_SEARCH_DOMAINS`),
+cached for 30 minutes. The agent cites each source and date, labels it as web
+news rather than the app's analysis, and gives no buy/sell view or prediction
+for it. Web search is optional — see [Configure `backend/.env`](#2-configure-backendenv).
+
 ### Where the LLM is used
 
 Technical and fundamental analysis make no LLM calls. Every prompt:
@@ -131,6 +138,16 @@ OPENROUTER_MODEL=inclusionai/ling-3.0-flash-fin:free
 
 Models ending `:free` draw on a separate daily allowance, so they keep working
 after a key's spend limit is exhausted.
+
+Optional, for web news about companies that are not tracked (either one):
+
+```
+TAVILY_API_KEY=<your key>    # tavily.com, free tier (about 1,000 searches a month)
+```
+
+or, with no key, `pip install ddgs` (DuckDuckGo; unofficial and may be
+rate-limited). Tavily is used when both are available. Without either, the chat
+simply says it has no analysis or news for an untracked company.
 
 #### 3. Install dependencies
 

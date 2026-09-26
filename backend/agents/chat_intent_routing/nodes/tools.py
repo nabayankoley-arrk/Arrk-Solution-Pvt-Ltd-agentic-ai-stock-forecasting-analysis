@@ -21,6 +21,11 @@ options. The caller resumes with the answer (main.py), and the node re-runs
 from the top: resolution is repeated (cheap, cached) and nothing expensive has
 run yet, which is why resolution comes first.
 
+A company the database does not track -- listed on BSE but not in `universe`
+("Tata Steel"), or not found at all -- has no analysis to run, so its tool
+result carries recent web news about it instead (web_search.py), marked as
+web information for the agent to present as such.
+
 Tool calls are executed here rather than by LangGraph's ToolNode because each
 call also records state (current_ticker, analyses), and ToolNode runs parallel
 calls -- "compare TCS and Infosys" -- as concurrent updates to the same keys.
@@ -43,6 +48,7 @@ from ._company_resolver import find_companies, resolve_answer, users_words
 from ._orchestrator import run_orchestrator
 from ._ticker_lookup import tracked_companies
 from .screening import CRITERIA, screen
+from .web_search import search_company_news
 
 Horizon = Optional[Literal["short_term", "medium_term", "long_term"]]
 
@@ -124,9 +130,36 @@ def _resolve(company):
     if resolution.ticker:
         return resolution.ticker, None, clarification
     if resolution.untracked:
-        name = resolution.untracked["name"]
-        return None, {"error": f"{name} is listed but not tracked, so it cannot be analysed. Tracked: {_tracked_list()}"}, clarification
-    return None, {"error": f"{company!r} is not a tracked company. Tracked: {_tracked_list()}"}, clarification
+        return None, {"untracked_company": resolution.untracked["name"], "listed": True}, clarification
+    return None, {"untracked_company": company, "listed": False}, clarification
+
+
+def _web_fallback(error, write_event):
+    """The tool result for an untracked company: recent web news, leading with
+    what matters so the model does not get lost in a list of other companies
+    (it already has the tracked list in its prompt)."""
+    company = error["untracked_company"]
+    write_event({"type": "status", "message": f"Searching the web for {company}..."})
+    web = search_company_news(company)
+    found = web.get("available") and web.get("results")
+    return {
+        "company": company,
+        "tracked": False,
+        "status": ("listed on BSE, but" if error["listed"] else "not found among listed companies, and") + " not tracked "
+                  "by this app, so there is no analysis for it",
+        "instructions": (
+            "Answer the user about this company from web_results below: summarise the recent news, cite each "
+            "source and date, and label it as recent web news, not this app's analysis. No buy/sell view or "
+            "price prediction."
+        ) if found else (
+            "Tell the user the app has no analysis for this company, and that web search is not set up on "
+            "this server, so no recent news could be looked up."
+            if web.get("reason") == "web search is not configured on this server"
+            else "Tell the user the app has no analysis or recent news for this company right now."
+        ),
+        "web_results": web.get("results") or [],
+        **({} if found else {"web_search": web.get("reason")}),
+    }
 
 
 def _analyze(ticker, args, write_event):
@@ -208,7 +241,9 @@ def tools(state):
             result = screen(criteria)
         elif call["name"] in _COMPANY_TOOLS:
             ticker, error, clarification = resolved[call["id"]]
-            if error:
+            if error and error.get("untracked_company"):
+                result = _web_fallback(dict(error), write_event)
+            elif error:
                 result = error
             elif call["name"] == "analyze_stock":
                 result, record = _analyze(ticker, args, write_event)
