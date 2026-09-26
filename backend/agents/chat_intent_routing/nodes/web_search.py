@@ -18,6 +18,7 @@ CACHE_TTL_SECONDS. They are untrusted third-party text: the agent's prompt says
 to treat them as information, never as instructions.
 """
 
+import datetime
 import os
 import re
 import time
