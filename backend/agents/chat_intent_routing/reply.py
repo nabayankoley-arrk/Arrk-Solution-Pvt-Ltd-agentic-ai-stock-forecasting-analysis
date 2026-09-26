@@ -80,31 +80,30 @@ def _facts(response):
     fundamental = response.get("fundamental_summary") or {}
     sentiment = response.get("sentiment_summary") or {}
     fundamental_composite = fundamental.get("composite") or {}
-
-    confidence = technical.get("confidence")
-    if confidence is None:
-        confidence = fundamental_composite.get("confidence")
+    verdict = response.get("verdict") or {}
+    planned = response.get("planned_pillars") or ["technical", "fundamental", "sentiment"]
     support_resistance = technical.get("support_resistance") or {}
     narrative = response.get("narrative")
 
     # Filtering the internal flags would otherwise let a partial read look
     # like a complete one. Name the missing pillars plainly instead -- which
-    # pillar had nothing to say is the caller's business; why is not.
+    # pillar had nothing to say is the caller's business; why is not. A
+    # pillar the horizon did not call for is "not_used", not missing.
     unavailable = [
         label
         for label, summary in (("technical", technical), ("fundamental", fundamental), ("sentiment", sentiment))
-        if not summary or "error" in summary or _is_unavailable_summary(label, summary)
+        if label in planned and (not summary or "error" in summary or _is_unavailable_summary(label, summary))
     ]
     return {
         "ticker": response.get("ticker"),
         "horizon": response.get("horizon"),
         "current_price": technical.get("current_price"),
-        "direction": (
-            (technical.get("technical_signal") or {}).get("direction")
-            or fundamental_composite.get("direction")
-            or sentiment.get("direction")
-        ),
-        "confidence": confidence,
+        "direction": verdict.get("direction"),
+        "confidence": verdict.get("confidence"),
+        "key_drivers": verdict.get("key_drivers") or [],
+        "conflicts": verdict.get("conflicts") or [],
+        "pillar_weights": response.get("pillar_weights"),
+        "not_used": [p for p in ("technical", "fundamental", "sentiment") if p not in planned],
         "support": support_resistance.get("support"),
         "resistance": support_resistance.get("resistance"),
         "risk_flags": _user_facing_flags(response.get("risk_flags") or []),
@@ -136,11 +135,12 @@ def analysis_digest(response):
     digest["technical"] = _compact(
         {
             key: facts["_technical"].get(key)
-            for key in ("as_of_date", "technical_signal", "candlestick_pattern", "pattern_direction", "trade_setup")
+            for key in ("as_of_date", "technical_signal", "volatility", "candlestick_pattern", "pattern_direction", "trade_setup")
         }
     )
-    digest["fundamental"] = _compact(facts["_fundamental"])
-    if "sentiment" not in facts["unavailable_pillars"]:
+    if "fundamental" not in facts["not_used"]:
+        digest["fundamental"] = _compact(facts["_fundamental"])
+    if "sentiment" not in facts["unavailable_pillars"] + facts["not_used"]:
         digest["sentiment"] = _compact(
             {key: facts["_sentiment"].get(key) for key in ("direction", "coverage", "summary", "sources")}
         )
@@ -159,9 +159,10 @@ def format_analysis_reply(response):
     if facts["current_price"] is not None:
         parts.append(f"Current price: {facts['current_price']}.")
     if facts["direction"]:
-        parts.append(f"Overall signal: {facts['direction']}.")
-    if facts["confidence"] is not None:
-        parts.append(f"Confidence: {facts['confidence']}.")
+        horizon = (facts["horizon"] or "").replace("_", " ")
+        parts.append(f"Overall {horizon} view: {facts['direction']}" + (f", {facts['confidence']} confidence." if facts["confidence"] else "."))
+    if facts["conflicts"]:
+        parts.append(f"Conflicting signals: {'; '.join(facts['conflicts'][:2])}.")
     if facts["support"] is not None and facts["resistance"] is not None:
         parts.append(f"Support around {facts['support']}, resistance around {facts['resistance']}.")
     if facts["risk_flags"]:
@@ -172,6 +173,12 @@ def format_analysis_reply(response):
         listed = " and ".join(missing) if len(missing) < 3 else ", ".join(missing[:-1]) + " and " + missing[-1]
         parts.append(f"This read is based on partial data -- {listed} analysis wasn't available.")
 
+    forecast = response.get("price_forecast") or {}
+    if forecast and not forecast.get("unavailable"):
+        parts.append(
+            f"Estimated range in {forecast['forecast_days']} days: {forecast['expected_price_low']}"
+            f"-{forecast['expected_price_high']} ({forecast['confidence']} confidence; an estimate, not a guarantee)."
+        )
     if facts["narrative"]:
         parts.append(f"Note: {facts['narrative']}")
     if len(parts) == 1:

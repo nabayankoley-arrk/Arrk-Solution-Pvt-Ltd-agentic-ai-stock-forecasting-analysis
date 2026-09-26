@@ -40,6 +40,8 @@ def finalize(state):
         # An empty final answer: replace it (same id) so the history stays readable.
         reply = format_analysis_reply(finished[-1]["response"]) if finished else config.UNAVAILABLE_REPLY
         update["messages"] = [AIMessage(reply, id=last.id)]
+        if not finished:
+            response_type = "error"  # nothing was answered; don't label it a reply
 
     latest = analyses[-1] if analyses else {}
     return {

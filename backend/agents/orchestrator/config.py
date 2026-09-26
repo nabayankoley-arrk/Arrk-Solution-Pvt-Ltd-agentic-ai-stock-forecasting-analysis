@@ -1,14 +1,8 @@
 """Tunable constants for the Orchestrator Subgraph.
 
-The specification's "Technical Specifications" section names five
-configurable parameters (MAX_TOOL_LOOPS, ANALYSIS_HORIZON,
-ENABLED_RERUN_TOOLS, TOOL_CALL_TIMEOUT, HUMAN_REVIEW_TIMEOUT) but states
-"No numeric defaults for these parameters are defined in the supplied
-architecture diagram; they should be provided through deployment
-configuration." All five are read from the environment below, falling
-back to this implementation's own default (chosen for a reasonable
-local/dev setup, not a value taken from the specification itself) when
-unset.
+Every value is read from the environment, falling back to the default below.
+There is no human-review timeout: pillar disagreement is reported in the
+verdict's conflicts rather than paused on (see nodes/_verdict.py).
 
 The LLM provider settings (OLLAMA_*/OPENROUTER_*/LLM_*) aren't named in
 the specification, but are exactly as deployment-specific -- different
@@ -65,6 +59,41 @@ HORIZON_TO_PILLAR_PARAMS = {
     "long_term": {"lookback_days": 500, "ratio_basis": "TTM", "lookback_years": 7},
 }
 
+# --- plan_analysis: which pillars run for a horizon, and how much each counts ---
+# Short term is price action: fundamentals barely move a price over days to
+# weeks, so that pillar is skipped. Long term is the business: technicals keep
+# a small say (the primary trend), fundamentals lead.
+HORIZON_PLAN = {
+    "short_term": {"technical": 0.7, "sentiment": 0.3},
+    "medium_term": {"technical": 0.4, "fundamental": 0.35, "sentiment": 0.25},
+    "long_term": {"technical": 0.15, "fundamental": 0.6, "sentiment": 0.25},
+}
+
+# What each horizon means for the reconciliation prompt (llm_client.py).
+HORIZON_GUIDANCE = {
+    "short_term": "days to a few weeks: price action, momentum, support/resistance and recent "
+                  "management commentary matter most; fundamentals are not considered.",
+    "medium_term": "a few months: trend and momentum, earnings quality and valuation, and "
+                   "management's outlook all matter.",
+    "long_term": "a year or more: business quality, growth, balance sheet and valuation lead; "
+                 "technicals only show the primary trend.",
+}
+
+# forecast_days -> horizon, when a caller asks for a forecast without a horizon.
+SHORT_TERM_MAX_DAYS = _env_int("SHORT_TERM_MAX_DAYS", 14)
+MEDIUM_TERM_MAX_DAYS = _env_int("MEDIUM_TERM_MAX_DAYS", 120)
+
+
+def horizon_for_days(days):
+    if days <= SHORT_TERM_MAX_DAYS:
+        return "short_term"
+    return "medium_term" if days <= MEDIUM_TERM_MAX_DAYS else "long_term"
+
+
+# --- the verdict (nodes/_verdict.py) ---
+# A weighted direction score within +/- this band reads as neutral.
+VERDICT_NEUTRAL_BAND = _env_float("VERDICT_NEUTRAL_BAND", 0.2)
+
 MAX_TOOL_LOOPS = _env_int("MAX_TOOL_LOOPS", 3)
 
 ENABLED_RERUN_TOOLS = _env_tuple(
@@ -73,8 +102,6 @@ ENABLED_RERUN_TOOLS = _env_tuple(
 
 # --- execute_tool_call ---
 TOOL_CALL_TIMEOUT_SECONDS = _env_int("TOOL_CALL_TIMEOUT_SECONDS", 30)
-
-HUMAN_REVIEW_TIMEOUT_SECONDS = _env_int("HUMAN_REVIEW_TIMEOUT_SECONDS", 3600)
 
 OLLAMA_BASE_URL = _env_str("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = _env_str("OLLAMA_MODEL", "llama3.2:3b")
@@ -92,6 +119,14 @@ LLM_PROVIDER = _env_str("LLM_PROVIDER", "openrouter")
 LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", 0.1)  # low: structured routing decision, not creative writing
 
 LLM_FALLBACK_ENABLED = _env_bool("LLM_FALLBACK_ENABLED", True)
+
+# --- forecast_price_range: the volatility baseline the LLM's range is anchored on ---
+# Half-width of the baseline range = FORECAST_ATR_MULTIPLIER * ATR(14) * sqrt(days).
+FORECAST_ATR_MULTIPLIER = _env_float("FORECAST_ATR_MULTIPLIER", 1.0)
+# How far the verdict may shift the baseline's centre, as a share of that half-width.
+FORECAST_TILT = _env_float("FORECAST_TILT", 0.3)
+# The LLM's range must lie within this many baseline half-widths of the current price.
+FORECAST_MAX_BAND_MULTIPLE = _env_float("FORECAST_MAX_BAND_MULTIPLE", 2.0)
 
 FORECAST_DISCLAIMER = (
     "This is a qualitative estimate reasoned by an LLM Agent from existing technical, fundamental, and "

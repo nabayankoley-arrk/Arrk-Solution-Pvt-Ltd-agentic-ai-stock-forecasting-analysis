@@ -61,36 +61,30 @@ class OrchestratorState(TypedDict, total=False):
     ratio_basis: Optional[str]
     lookback_years: Optional[int]
 
+    # --- plan_analysis ---
+    planned_pillars: Optional[list]  # e.g. ["technical", "sentiment"] for short_term
+    pillar_weights: Optional[dict]  # {"technical": 0.7, "sentiment": 0.3} -- config.HORIZON_PLAN
+
     # --- baseline analysis / tool reruns ---
     technical_analysis: Optional[dict]  # Technical Analysis Agent's final_output, or None
     fundamental_analysis: Optional[dict]  # Fundamental Analysis Agent's final_output, or None
     sentiment_analysis: Optional[dict]  # Sentiment Analysis's final_output, or the "unavailable" stub
 
-    pillar_status: Annotated[dict, _merge_dicts]  # {"technical": "ok"|"error"|"unavailable"|"timeout", ...}
+    pillar_status: Annotated[dict, _merge_dicts]  # {"technical": "ok"|"error"|"unavailable"|"timeout"|"skipped", ...}
     errors: Annotated[dict, _merge_dicts]  # {"technical": "reason" | None, ...}
 
     # --- reconcile_and_decide (the LLM Agent's decision contract) ---
     decision: Optional[str]  # 'finalize' | 'call_tool'
     selected_tool: Optional[str]  # 'rerun_technical' | 'rerun_fundamental' | 'rerun_sentiment' | None
-    reason: Optional[str]
+    reason: Optional[str]  # the LLM's explanation of the verdict (the reply's narrative)
     tool_call_args: Optional[dict]
-    requires_review: bool
     tool_loop_count: int
-
-    # loop_guard_override: not in the specification's field list. Set for
-    # exactly one reconcile_and_decide pass by request_human_review when a
-    # reviewer explicitly requests a rerun, so that pass doesn't
-    # immediately re-trip MAX_TOOL_LOOPS ("this explicit request bypasses
-    # MAX_TOOL_LOOPS" -- see request_human_review.py). Cleared by
-    # reconcile_and_decide after one use.
-    loop_guard_override: bool
+    # {"direction", "confidence", "score", "coverage", "pillars", "key_drivers", "conflicts"}
+    # -- see nodes/_verdict.py; set on finalize.
+    verdict: Optional[dict]
 
     # --- execute_tool_call ---
     tool_result: Optional[dict]
-
-    # --- request_human_review ---
-    reviewer_decision: Optional[str]  # 'approve' | 'edit' | 'rerun'
-    review_notes: Optional[str]
 
     # --- output ---
     final_response: Optional[dict]

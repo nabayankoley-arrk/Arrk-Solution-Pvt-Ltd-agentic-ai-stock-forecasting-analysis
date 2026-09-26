@@ -27,7 +27,7 @@ build_final_response.
 
 import uuid
 
-from ..config import DEFAULT_HORIZON, HORIZON_TO_PILLAR_PARAMS, VALID_HORIZONS
+from ..config import DEFAULT_HORIZON, HORIZON_TO_PILLAR_PARAMS, VALID_HORIZONS, horizon_for_days
 
 
 def validate_input(state):
@@ -37,7 +37,10 @@ def validate_input(state):
     if not ticker or not isinstance(ticker, str):
         return {"run_id": run_id, "is_valid": False, "validation_error": "ticker is required and must be a string"}
 
-    horizon = state.get("horizon") or DEFAULT_HORIZON
+    forecast_days = state.get("forecast_days")
+    days_ok = isinstance(forecast_days, int) and not isinstance(forecast_days, bool) and forecast_days > 0
+    # No horizon given: a forecast's length decides it ("next week" is short term).
+    horizon = state.get("horizon") or (horizon_for_days(forecast_days) if days_ok else DEFAULT_HORIZON)
     if horizon not in VALID_HORIZONS:
         return {
             "run_id": run_id,
@@ -45,10 +48,7 @@ def validate_input(state):
             "validation_error": f"horizon must be one of {VALID_HORIZONS}, got {horizon!r}",
         }
 
-    forecast_days = state.get("forecast_days")
-    if forecast_days is not None and (
-        not isinstance(forecast_days, int) or isinstance(forecast_days, bool) or forecast_days <= 0
-    ):
+    if forecast_days is not None and not days_ok:
         return {
             "run_id": run_id,
             "is_valid": False,
@@ -68,5 +68,4 @@ def validate_input(state):
         "pillar_status": {},
         "errors": {},
         "tool_loop_count": 0,
-        "loop_guard_override": False,
     }

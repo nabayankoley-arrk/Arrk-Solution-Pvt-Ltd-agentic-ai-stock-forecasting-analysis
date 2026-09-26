@@ -32,9 +32,10 @@ def persist_run(state):
         "final_decision": state.get("decision") or ("invalid_input" if error_response else None),
         "final_response": state.get("final_response"),
         "error_details": error_response or (errors or None),
-        "requires_review": bool(state.get("requires_review", False)),
-        "reviewer_decision": state.get("reviewer_decision"),
-        "review_notes": state.get("review_notes"),
+        # The orchestrator_runs columns remain; there is no review step any more.
+        "requires_review": False,
+        "reviewer_decision": None,
+        "review_notes": None,
     }
     save_orchestrator_run(record)
     return {}

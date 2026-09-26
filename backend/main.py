@@ -11,6 +11,12 @@ POST /api/chat           -> free-text message; the Chat Intent & Routing graph's
 POST /api/chat/stream    -> the same turn as Server-Sent Events: `status` while an
                             analysis runs, `token` as the reply is written, then
                             `done` with the same body /api/chat returns.
+
+When the user names a company that fits several listed companies ("Mahindra"),
+the turn pauses (LangGraph interrupt) and both chat endpoints return
+response_type "clarification" with the candidates as `options`. The session's
+next message is the answer: it resumes the paused turn instead of starting a
+new one.
 POST /api/stock-analysis -> structured request; the ticker is passed as an
                             explicit override, so it skips the agent and returns
                             the Orchestrator's raw final_response.
@@ -23,12 +29,13 @@ import bootstrap  # noqa: F401  -- .env + OS trust store; must precede env reads
 import json
 import uuid
 from pathlib import Path
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import AIMessage
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from agents.chat_intent_routing import config as chat_config
@@ -103,11 +110,50 @@ class ChatRequest(BaseModel):
     user_id: Optional[str] = Field(None, description="Tags this turn in the conversation audit log.")
 
 
+class ClarificationOption(BaseModel):
+    ticker: str
+    name: str
+    tracked: bool  # False: listed on BSE, but not tracked here, so it cannot be analysed
+
+
 class ChatResponse(BaseModel):
     reply: str
-    response_type: Literal["analysis", "reply", "error"]
+    response_type: Literal["analysis", "reply", "clarification", "error"]
     session_id: str
     ticker: Optional[str] = None
+    options: Optional[List[ClarificationOption]] = None  # set when response_type is "clarification"
+
+
+def _pending_question(config):
+    """The clarification a paused turn is waiting on, or None."""
+    for task in chat_intent_routing_graph.get_state(config).tasks:
+        for pending in task.interrupts:
+            return pending.value
+    return None
+
+
+def _turn(request, session_id, config):
+    """The graph input for this request: the answer to a paused turn's question,
+    or a new turn."""
+    if _pending_question(config):
+        return Command(resume=request.message)
+    return turn_input(user_id=request.user_id, message=request.message, thread_id=session_id)
+
+
+def _chat_response(config, session_id):
+    question = _pending_question(config)
+    if question:
+        return ChatResponse(
+            reply=question["question"], response_type="clarification", session_id=session_id,
+            options=question.get("options"),
+        )
+    result = chat_intent_routing_graph.get_state(config).values
+    return ChatResponse(
+        reply=result.get("reply") or chat_config.ERROR_REPLY,
+        response_type=result.get("response_type") or "error",
+        session_id=session_id,
+        ticker=result.get("resolved_ticker"),
+    )
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -115,23 +161,13 @@ def run_chat(request: ChatRequest):
     """Free-text chat. The graph writes the reply itself; a failure anywhere
     comes back as an error reply, never a 500."""
     session_id = request.session_id or str(uuid.uuid4())
+    config = {"configurable": {"thread_id": session_id}}
     try:
-        result = _invoke_chat_intent_routing(
-            session_id, user_id=request.user_id, message=request.message, thread_id=session_id
-        )
+        chat_intent_routing_graph.invoke(_turn(request, session_id, config), config=config)
+        return _chat_response(config, session_id)
     except Exception as exc:
         print(f"[api] /api/chat failed for session_id={session_id}: {type(exc).__name__}: {exc}", flush=True)
         return ChatResponse(reply=chat_config.ERROR_REPLY, response_type="error", session_id=session_id)
-    return _chat_response(result, session_id)
-
-
-def _chat_response(result, session_id):
-    return ChatResponse(
-        reply=result.get("reply") or chat_config.ERROR_REPLY,
-        response_type=result.get("response_type") or "error",
-        session_id=session_id,
-        ticker=result.get("resolved_ticker"),
-    )
 
 
 def _sse(event, data):
@@ -152,7 +188,7 @@ def _reply_token(chunk, metadata):
 def run_chat_stream(request: ChatRequest):
     """/api/chat as Server-Sent Events, one JSON object per `data:` line:
 
-        event: status  {"type": "status", "ticker", "message"}  -- an analysis is starting
+        event: status  {"type": "status", "ticker", "message"}  -- a tool call is starting
         event: token   {"text"}                                 -- the next piece of the reply
         event: done    the ChatResponse body, as /api/chat returns it
 
@@ -163,10 +199,10 @@ def run_chat_stream(request: ChatRequest):
     """
     session_id = request.session_id or str(uuid.uuid4())
     config = {"configurable": {"thread_id": session_id}}
-    turn = turn_input(user_id=request.user_id, message=request.message, thread_id=session_id)
 
     def events():
         try:
+            turn = _turn(request, session_id, config)
             for mode, payload in chat_intent_routing_graph.stream(turn, config=config, stream_mode=["custom", "messages"]):
                 if mode == "custom":
                     yield _sse("status", payload)
@@ -174,8 +210,7 @@ def run_chat_stream(request: ChatRequest):
                 text = _reply_token(*payload)
                 if text:
                     yield _sse("token", {"text": text})
-            result = chat_intent_routing_graph.get_state(config).values
-            yield _sse("done", _chat_response(result, session_id).model_dump())
+            yield _sse("done", _chat_response(config, session_id).model_dump())
         except Exception as exc:
             print(f"[api] /api/chat/stream failed for session_id={session_id}: {type(exc).__name__}: {exc}", flush=True)
             error = ChatResponse(reply=chat_config.ERROR_REPLY, response_type="error", session_id=session_id)

@@ -18,20 +18,53 @@ AI-powered stock forecasting and analysis platform leveraging Large Language Mod
 frontend (chat UI) --POST /api/chat/stream--> backend/main.py
                                                   |
    agents/chat_intent_routing  -- LangGraph tool-calling agent, conversation in a Postgres checkpointer
-       |- analyze_stock(ticker)        -> agents/orchestrator
-       |                                    |- technical_analysis    (rules, "Technical".price_history)
-       |                                    |- fundamental_analysis  (rules, financial_statements)
-       |                                    |- sentiment_analysis    (document_summaries)
-       |                                    `- reconciles the three pillars, optional human review
-       `- get_filing_sentiment(ticker) -> agents/sentiment_analysis only
+       |   (an ambiguous company name pauses the turn and asks the user which one)
+       |- analyze_stock(company, horizon, forecast_days) -> agents/orchestrator
+       |       plan_analysis: pillars + weights for the horizon
+       |         |- technical_analysis    (rules, "Technical".price_history)
+       |         |- fundamental_analysis  (rules, financial_statements; skipped for short term)
+       |         `- sentiment_analysis    (document_summaries)
+       |       reconcile_and_decide: verdict (direction, confidence, drivers, conflicts)
+       |       forecast_price_range: ATR-anchored price range, when forecast_days is set
+       |- get_filing_sentiment(company)                  -> agents/sentiment_analysis only
+       `- screen_stocks(criteria)                        -> every tracked company, rules only
 ```
 
 The chat agent reads each message in the context of the session, decides
-whether to answer directly, ask which company, refuse an off-topic question or
-call a tool, and writes the reply from the tool results. `analyze_stock` gives
-the overall picture (price, signals, support/resistance, all three pillars);
-`get_filing_sentiment` answers questions about what the latest annual report
-and call transcript said — management tone, guidance, risks, themes, quotes.
+whether to answer directly, refuse an off-topic question or call a tool, and
+writes the reply from the tool results.
+
+- **`analyze_stock`** gives the overall picture for one company. The horizon
+  ("next week", "over the next year") decides which analyses run and how much
+  each counts:
+
+  | Horizon | Pillars (weight) |
+  | --- | --- |
+  | `short_term` (days–weeks) | technical 70%, sentiment 30% — fundamentals skipped |
+  | `medium_term` (months, the default) | technical 40%, fundamental 35%, sentiment 25% |
+  | `long_term` (a year or more) | fundamental 60%, sentiment 25%, technical 15% |
+
+  The orchestrator's verdict starts from the weighted directions; the LLM may
+  lean away from it with a reason, but cannot flip it or raise its confidence.
+  Disagreeing pillars are reported as conflicts, not paused on. A price
+  prediction ("where will Reliance be next month?") adds `forecast_days`: a
+  range of ±ATR·√days around the current price, shifted toward the verdict,
+  which the LLM may refine within twice that width.
+- **`get_filing_sentiment`** answers questions about what the latest annual
+  report and call transcript said — management tone, guidance, risks, themes,
+  quotes.
+- **`screen_stocks`** answers general questions across companies ("which stock
+  is good for a beginner?"): every tracked company's technical and fundamental
+  signals and stored sentiment side by side, ranked by a transparent points
+  table for `beginner`, `growth`, `value` or `momentum`. No LLM call; cached for
+  10 minutes.
+
+Companies are passed as the user named them. A name that fits several listed
+companies — "Mahindra" (Mahindra & Mahindra, Kotak Mahindra Bank, Tech
+Mahindra…), "Reliance" (Reliance Industries, Reliance Power…) — pauses the turn
+with a LangGraph interrupt and asks which one, listing tracked companies first;
+untracked ones are shown but cannot be analysed. Matching uses the tracked
+companies plus BSE's list of listed equities.
 
 ### Where the LLM is used
 
@@ -42,7 +75,7 @@ Technical and fundamental analysis make no LLM calls. Every prompt:
 | Chat agent | `agents/chat_intent_routing/nodes/agent.py`, tool descriptions in `nodes/tools.py` | Every chat turn, again after each tool call |
 | Sentiment profile | `agents/sentiment_analysis/prompts.py` | Once per stored filing summary (and per `PROMPT_VERSION`); cached afterwards |
 | Pillar reconciliation | `agents/orchestrator/llm_client.py` | Each analysis |
-| Price-range forecast | `agents/orchestrator/forecast_price_range.py` | Only with `forecast_days` (`/api/stock-analysis`) |
+| Price-range forecast | `agents/orchestrator/forecast_price_range.py` | Price predictions (`forecast_days` from chat or `/api/stock-analysis`) |
 | Filing summaries | `ingestion/summarise.py` | Offline, in `jobs/summarise_reports` |
 
 All use the provider and model from `backend/.env` (`LLM_PROVIDER`,
@@ -298,8 +331,9 @@ Serves the frontend at <http://127.0.0.1:8000/> and Swagger at `/docs`.
 [How it works](#how-it-works)). Only `message` is required. It reads the
 message in the context of the conversation so far and either answers directly
 (clarifying questions, off-topic refusals, follow-ups on earlier results) or
-calls a tool — `analyze_stock` for the overall picture, `get_filing_sentiment`
-for questions about the annual report or call transcript — once per company,
+calls a tool — `analyze_stock` for the overall picture or a price prediction,
+`get_filing_sentiment` for questions about the annual report or call
+transcript, `screen_stocks` for questions across companies — once per company,
 so comparisons work.
 
 - **`session_id`** is the conversation. Omit it on the first message and send
@@ -323,17 +357,23 @@ same JSON `/api/chat` returns. Treat `done.reply` as authoritative.
 curl -N -X POST http://127.0.0.1:8000/api/chat/stream -H "Content-Type: application/json" -d "{\"message\": \"how is TCS looking?\"}"
 ```
 
-`response_type` is `analysis` (an analysis ran this turn), `reply` or `error`.
+`response_type` is `analysis` (an analysis ran this turn), `reply`,
+`clarification` or `error`. A `clarification` means the turn is paused on a
+question ("Which company do you mean by "Mahindra"?") and carries `options`
+(`[{"ticker", "name", "tracked"}]`); the session's **next message is the
+answer** — an option's name or ticker, or free text — and resumes the turn.
+The UI shows the options as buttons.
 Needs the LLM settings from `backend/.env`, and a model that supports tool
 calling (OpenRouter lists this per model); if the model can't be reached the
 reply says so.
 
 `POST /api/stock-analysis` — structured; `stock_name` is the only required
-field. Supply `forecast_days` for an LLM-reasoned price range (a qualitative
-estimate over existing pillar signals, not a trained forecasting model — it
-carries a disclaimer, and returns `unavailable` rather than inventing a number
-when the LLM can't be reached). `/api/chat` never sets `forecast_days`, so chat
-replies contain no forecast.
+field, and it must be an exact ticker (there is no clarification here).
+Supply `forecast_days` for a price range (an estimate anchored on recent
+volatility, not a trained forecasting model; it carries a disclaimer, and falls
+back to the plain volatility range when the LLM can't be reached). Without a
+`horizon`, `forecast_days` picks it (≤ 14 days short, ≤ 120 medium, else long).
+The response includes the `verdict` and the `planned_pillars`.
 
 ```json
 {"stock_name": "TCS.NS", "horizon": "medium_term", "forecast_days": 30}

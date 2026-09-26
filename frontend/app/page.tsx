@@ -48,6 +48,8 @@ export default function Home() {
   async function sendMessage(message: string) {
     if (!message || loading) return;
 
+    // Any open clarification is answered by this message, so its buttons go.
+    setMessages((prev) => prev.map((m) => (m.options ? { ...m, options: undefined } : m)));
     addMessage({ role: "user", content: message });
     setInput("");
     setLoading(true);
@@ -74,6 +76,7 @@ export default function Home() {
         content: data.reply,
         responseType: data.response_type,
         ticker: data.ticker,
+        options: data.options ?? undefined,
         streaming: false,
         status: undefined,
       }));
@@ -127,7 +130,11 @@ export default function Home() {
         <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-4 py-5 md:px-8">
           <div className="mx-auto flex max-w-3xl flex-col gap-4">
             {messages.map((m) => (
-              <MessageBubble key={m.id} message={m} />
+              <MessageBubble
+                key={m.id}
+                message={m}
+                onOption={m.options && !loading ? (option) => void sendMessage(option.name) : undefined}
+              />
             ))}
           </div>
         </div>

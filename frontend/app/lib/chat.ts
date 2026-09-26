@@ -19,15 +19,28 @@ export interface ChatMessage {
   // Set while an assistant reply is still streaming in (see streamChat).
   streaming?: boolean;
   status?: string; // e.g. "Analysing TCS.NS..." -- shown until the first token arrives
+  // A clarification's choices, shown as buttons until one is picked.
+  options?: ClarificationOption[];
+}
+
+// One company the backend asks the user to choose between ("Mahindra" ->
+// Mahindra & Mahindra, Kotak Mahindra Bank, ...). Untracked ones are listed on
+// BSE but cannot be analysed here.
+export interface ClarificationOption {
+  ticker: string;
+  name: string;
+  tracked: boolean;
 }
 
 // Mirrors backend/main.py's ChatResponse (the POST /api/chat response body)
 // field for field, including the snake_case key FastAPI actually returns.
+// A "clarification" pauses the turn: the session's next message answers it.
 export interface ChatApiResponse {
   reply: string;
-  response_type: "analysis" | "reply" | "error";
+  response_type: "analysis" | "reply" | "clarification" | "error";
   session_id: string;
   ticker?: string | null;
+  options?: ClarificationOption[] | null;
 }
 
 export interface ChatRequestBody {
@@ -131,8 +144,9 @@ export function newSessionMessage(): ChatMessage {
 // Sidebar's "Try asking" shortcuts. The backend's LLM resolves company names
 // and follow-ups from the conversation, so plain phrasing works.
 export const EXAMPLE_PROMPTS: string[] = [
-  "How is TCS.NS looking today?",
-  "What's the trend for INFY.NS?",
-  "Is RELIANCE.NS a buy right now?",
-  "What is the latest forecast?",
+  "How is TCS looking today?",
+  "Where will Reliance be in a month?",
+  "How is Mahindra doing?",
+  "Which stock is good for a beginner?",
+  "What did Infosys management say on the last call?",
 ];
