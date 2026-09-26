@@ -4,15 +4,27 @@ Pacing is per host rather than global, so waiting politely on BSE does not
 also slow a company website. Every requests-level exception is translated
 into this package's own error types here, which is what lets the rest of the
 code catch failures by meaning rather than by library detail.
+
+The session is curl_cffi rather than requests. BSE's API sits behind Akamai,
+which fingerprints the TLS handshake and answers "Access Denied" (403) to
+Python's ssl stack whatever headers are sent. curl_cffi presents a real
+browser's handshake, which is the only thing that changed the outcome.
 """
 
 import time
 import urllib.parse
 
 import requests
+from curl_cffi import requests as curl_requests
+from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
 from . import config
 from .errors import SourceUnavailable
+
+# Transport failures from either library. curl_cffi's exceptions do not derive
+# from requests', and derive from OSError instead, so a caller that also
+# catches OSError must catch these first.
+TRANSPORT_ERRORS = (requests.RequestException, CurlRequestException)
 
 
 class HttpClient:
@@ -29,7 +41,7 @@ class HttpClient:
         delay_seconds=config.REQUEST_DELAY_SECONDS,
         timeout_seconds=config.REQUEST_TIMEOUT_SECONDS,
     ):
-        self.session = requests.Session()
+        self.session = curl_requests.Session(impersonate=config.IMPERSONATE_BROWSER)
         self.session.headers.update(config.REQUEST_HEADERS)
         self._delay_seconds = delay_seconds
         self._timeout_seconds = timeout_seconds
@@ -74,7 +86,7 @@ class HttpClient:
                     timeout=self._timeout_seconds,
                     stream=stream,
                 )
-            except requests.RequestException as exc:
+            except TRANSPORT_ERRORS as exc:
                 last_problem = f"{type(exc).__name__}: {exc}"
             else:
                 if response.status_code not in config.RETRY_STATUS_CODES:

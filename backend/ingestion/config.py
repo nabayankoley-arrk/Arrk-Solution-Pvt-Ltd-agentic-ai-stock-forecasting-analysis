@@ -17,6 +17,10 @@ REQUEST_HEADERS = {
     "Origin": "https://www.bseindia.com",
 }
 
+# The browser whose TLS handshake curl_cffi reproduces. The headers above are
+# not enough on their own: BSE's edge rejects Python's handshake outright.
+IMPERSONATE_BROWSER = "chrome"
+
 # --- politeness and resilience ---
 REQUEST_TIMEOUT_SECONDS = 30
 # Applied per host, so pacing BSE does not also slow a company site. Neither

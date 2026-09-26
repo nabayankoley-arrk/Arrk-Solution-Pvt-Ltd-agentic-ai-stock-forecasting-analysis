@@ -24,10 +24,9 @@ import pathlib
 import re
 import shutil
 
-import requests
-
 from . import config, taxonomy
 from .errors import DocumentUnavailable, NotADocument, SourceUnavailable, StorageError
+from .http import TRANSPORT_ERRORS
 
 _SLUG_UNSAFE = re.compile(r"[^a-z0-9]+")
 
@@ -265,7 +264,7 @@ def _stream_to_file(response, destination):
                     handle.write(chunk)
                     digest.update(chunk)
                     total += len(chunk)
-            except requests.RequestException as exc:
+            except TRANSPORT_ERRORS as exc:
                 # A connection dropped or timed out part way through the body.
                 raise DocumentUnavailable(
                     f"transfer interrupted after {total} bytes: {type(exc).__name__}: {exc}"
