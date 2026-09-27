@@ -25,7 +25,7 @@ frontend (chat UI) --POST /api/chat/stream--> backend/main.py
        |         |- fundamental_analysis  (rules, financial_statements; skipped for short term)
        |         `- sentiment_analysis    (document_summaries)
        |       reconcile_and_decide: verdict (direction, confidence, drivers, conflicts)
-       |       forecast_price_range: ATR-anchored price range, when forecast_days is set
+       |       forecast_price_range: volatility-anchored price range, when forecast_days is set
        |- get_filing_sentiment(company)                  -> agents/sentiment_analysis only
        `- screen_stocks(criteria)                        -> every tracked company, rules only
 ```
@@ -46,10 +46,21 @@ writes the reply from the tool results.
 
   The orchestrator's verdict starts from the weighted directions; the LLM may
   lean away from it with a reason, but cannot flip it or raise its confidence.
-  Disagreeing pillars are reported as conflicts, not paused on. A price
-  prediction ("where will Reliance be next month?") adds `forecast_days`: a
-  range of ±ATR·√days around the current price, shifted toward the verdict,
-  which the LLM may refine within twice that width.
+  Disagreeing pillars are reported as conflicts, not paused on: confidence is
+  "low" only when pillars carrying 35%+ of the weight disagree with the
+  verdict.
+
+  A price prediction ("where will Reliance be next month?") adds
+  `forecast_days`. The range is price × e^(±σ·√trading days), about a 68%
+  range, where σ is the daily return volatility over the last 60 sessions. For
+  short-term forecasts (≤ 14 days) it stays centred on the current price: the
+  technical signal behind them showed no directional edge in the backtest
+  (`FORECAST_TILT_SHORT_TERM` turns the shift back on). Longer forecasts shift
+  their centre toward the verdict, and from 6 months on, toward the analysts'
+  average 12-month target (up to halfway at a year, with 5+ analysts). The LLM
+  may refine it within twice that width but not narrow it below half. There is
+  no range beyond 2 years. Typical widths on the seeded data: about 7% for a
+  week, 8% for a month, 26% for a year.
 - **`get_filing_sentiment`** answers questions about what the latest annual
   report and call transcript said — management tone, guidance, risks, themes,
   quotes.
@@ -728,6 +739,32 @@ Manually-run jobs. Each is a module with a `__main__` guard, run from `backend/`
 | --- | --- |
 | `python -m jobs.top20` | Print the current top 20 BSE companies by market capitalisation |
 | `python -m jobs.summarise_reports` | Download the latest AR and TR per company, summarise each, store the summaries |
+| `python -m jobs.backtest_forecasts` | Replay stored price history to check the forecast ranges and the technical signal |
+
+### Backtesting the forecasts
+
+`jobs.backtest_forecasts` steps through past dates in `"Technical".price_history`.
+At each date it rebuilds, from prices up to that date only, the range the app
+would have forecast and the technical signal it would have given, then checks
+the actual close 7, 30, 90, 180 and 365 days later. It needs no LLM and runs in
+seconds. Options: `--tickers`, `--horizons`, `--step`, `--csv FILE` (every sample).
+
+Results on the seeded data (20 companies, start dates Sept 2024 – Sept 2026,
+8,084 samples):
+
+| Horizon | Actual inside the 1σ range (target 68%) | Inside 90% band (target 90%) | Technical signal correct (chance ≈ 50%) |
+| --- | --- | --- | --- |
+| 7 days | 70.4% | 89.0% | 48.2% |
+| 30 days | 69.0% | 89.6% | 48.4% |
+| 90 days | 70.8% | 89.1% | 47.7% |
+| 180 days | 70.3% | 90.5% | 48.8% |
+| 1 year | 73.6% | 91.3% | 47.1% |
+
+The ranges are well calibrated. The technical pillar's bullish/bearish call has
+shown no directional edge. The fundamental and sentiment pillars, the analyst
+target pull and the LLM's refinement cannot be backtested (there is no
+point-in-time history for them). Samples overlap, so treat differences of a few
+points as noise; the tickers are today's largest companies (survivorship).
 
 ### Before the first run
 

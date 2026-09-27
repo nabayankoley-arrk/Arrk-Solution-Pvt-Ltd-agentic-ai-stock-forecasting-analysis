@@ -24,6 +24,8 @@ MACD_SIGNAL = 9
 ATR_PERIOD = 14
 BOLLINGER_PERIOD = 20
 BOLLINGER_STD_DEV = 2
+# Daily return volatility (the price forecast's sigma) is measured over this many sessions.
+RETURN_VOLATILITY_WINDOW = 60
 
 # --- compute_support_resistance ---
 # Specification gives a 20-60 day range for this window; fixed at the

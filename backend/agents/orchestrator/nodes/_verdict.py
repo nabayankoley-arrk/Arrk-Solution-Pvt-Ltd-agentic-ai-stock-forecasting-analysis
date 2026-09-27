@@ -57,7 +57,14 @@ def weighted_verdict(state):
     else:
         conflicts = [f"{p} is {directions[p]}" for p in available if directions[p] != "neutral"] if {"bullish", "bearish"} <= present else []
 
-    if coverage < 0.5 or {"bullish", "bearish"} <= present:
+    # How much of the available weight points against the verdict (for a
+    # neutral verdict: the smaller of the bullish and bearish sides). A minor
+    # dissenting pillar lowers confidence to medium, not low.
+    side = {d: sum(w for p, w in available.items() if directions[p] == d) for d in ("bullish", "bearish")}
+    opposing = side[opposed[direction]] if direction in opposed else min(side.values())
+    opposing_share = opposing / sum(available.values())
+
+    if coverage < 0.5 or opposing_share >= config.VERDICT_LOW_CONFIDENCE_OPPOSITION:
         confidence = "low"
     elif coverage >= 0.8 and not conflicts and abs(score) >= 0.5:
         confidence = "high"

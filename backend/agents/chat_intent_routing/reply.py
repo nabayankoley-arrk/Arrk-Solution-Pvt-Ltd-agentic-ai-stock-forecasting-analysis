@@ -147,6 +147,9 @@ def analysis_digest(response):
     forecast = response.get("price_forecast")
     if forecast and not forecast.get("unavailable"):
         digest["price_forecast"] = _compact(forecast)
+    elif forecast:
+        # Say why there is no range, so the model does not make one up.
+        digest["price_forecast"] = {"unavailable": True, "reason": forecast.get("reason") or "not available"}
     return _compact(digest)
 
 
