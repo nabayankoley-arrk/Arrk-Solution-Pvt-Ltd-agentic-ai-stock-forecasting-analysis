@@ -50,6 +50,7 @@ class Resolution:
     ticker: str = None  # the tracked NSE ticker, when resolved to one tracked company
     candidates: list = field(default_factory=list)  # [{"ticker", "name", "tracked"}], when ambiguous
     untracked: dict = None  # the one listed-but-untracked company it resolved to, if that
+    unavailable: bool = False  # the tracked-company list could not be read (database down)
 
     @property
     def ambiguous(self):
@@ -87,6 +88,10 @@ def find_companies(query):
     if not raw:
         return Resolution()
     tracked = _ticker_lookup.tracked_companies()
+    if not tracked:
+        # The database is unreachable (the universe is never empty otherwise):
+        # every company would look untracked, so say that instead of guessing.
+        return Resolution(unavailable=True)
     by_symbol = {t.split(".")[0].upper(): t for t, _ in tracked}
 
     lowered, normalised = raw.lower(), _normalise(raw)

@@ -114,6 +114,9 @@ def _resolve(company):
     answered, so the model knows the choice: the answer to a pause is not a
     message in the conversation."""
     resolution = find_companies(company)
+    if resolution.unavailable:
+        return None, {"error": "the stock database is unavailable right now, so no analysis can be run. "
+                               "Tell the user to try again shortly; do not say the company is untracked."}, None
     clarification = None
     if resolution.ambiguous:
         answer = interrupt({
