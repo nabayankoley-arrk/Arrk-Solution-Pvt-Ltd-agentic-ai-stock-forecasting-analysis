@@ -45,28 +45,33 @@ import requests
 
 from . import config
 
-_SYSTEM_PROMPT = """You are the reconciliation agent for a stock-analysis orchestrator. \
-You are given the latest Technical, Fundamental, and Sentiment analysis results for one \
-ticker and must decide whether the orchestrator can finalize its response now, or should \
-rerun exactly one analysis pillar to get more information first.
+_SYSTEM_PROMPT = """You are the reconciliation agent of a stock-analysis orchestrator. For one \
+ticker and one horizon you get compact results from the analysis pillars the horizon calls for, \
+their weights, and a weighted baseline verdict computed from their directions. Decide whether \
+to finalize now or rerun exactly one pillar first, and give the overall verdict.
 
-Respond with ONLY a single JSON object, no other text, matching this shape:
+Respond with ONLY one JSON object, no other text:
 {
   "decision": "finalize" | "call_tool",
-  "selected_tool": one of the enabled_rerun_tools, or null,
-  "reason": "concise explanation for the decision",
+  "selected_tool": one of enabled_rerun_tools, or null,
   "tool_call_args": {},
-  "requires_review": true | false
+  "overall_direction": "bullish" | "neutral" | "bearish",
+  "confidence": "low" | "medium" | "high",
+  "key_drivers": ["up to three short points: the signals that decide the verdict"],
+  "conflicts": ["short points where the pillars disagree, or []"],
+  "reason": "two or three sentences explaining the verdict for this horizon"
 }
 
 Rules:
-- "selected_tool" must be null unless "decision" is "call_tool".
-- "requires_review" is only meaningful when "decision" is "finalize". Set it to true \
-whenever the pillars disagree on direction, any pillar's status is not "ok", or you are \
-finalizing only because you were told the loop guard was reached -- never ship an \
-uncertain result silently.
-- Only choose "call_tool" if another rerun of one pillar could plausibly resolve a \
-genuine disagreement or fill a genuine gap, and tool_loop_count is below max_tool_loops."""
+- Judge for the horizon given in horizon_guidance, and weigh each pillar by pillar_weights. A \
+pillar with status other than "ok" has no say.
+- Start from baseline_verdict. Move away from it only for a reason visible in the results (for \
+example a strong momentum signal with low volatility, or valuation risk flags), and say so.
+- confidence is at most baseline_verdict's confidence; lower it when the results give a reason \
+(for example weak or contradictory signals within a pillar).
+- Choose "call_tool" only if rerunning one planned pillar could plausibly fill a genuine gap \
+(for example it errored) and tool_loop_count is below max_tool_loops; otherwise finalize.
+- Use only the figures given. Never invent prices, targets or data."""
 
 
 class LLMAgentError(Exception):
@@ -76,15 +81,16 @@ class LLMAgentError(Exception):
 
 def get_decision(context):
     """context: the reconciliation payload built by reconcile_and_decide
-    (ticker, horizon, the three pillar results, pillar_status, errors,
-    tool_loop_count, max_tool_loops, enabled_rerun_tools).
+    (ticker, horizon, horizon_guidance, pillar_weights, pillars (digests),
+    pillar_status, baseline_verdict, tool_loop_count, max_tool_loops,
+    enabled_rerun_tools).
 
-    Returns a dict matching the decision contract: decision, selected_tool,
-    reason, tool_call_args, requires_review.
+    Returns {decision, selected_tool, tool_call_args, reason, verdict} with a
+    verdict of {direction, confidence, key_drivers, conflicts}, falling back
+    to the baseline verdict when the LLM cannot be reached.
     """
     try:
-        raw_text = _call_llm(context)
-        return _parse_decision(raw_text)
+        return _parse_decision(_call_llm(context), context)
     except Exception as exc:
         if not config.LLM_FALLBACK_ENABLED:
             raise LLMAgentError(str(exc)) from exc
@@ -178,11 +184,11 @@ def _build_prompt(context):
     return (
         f"ticker: {context['ticker']}\n"
         f"horizon: {context['horizon']}\n"
-        f"technical_analysis: {json.dumps(context['technical_analysis'])}\n"
-        f"fundamental_analysis: {json.dumps(context['fundamental_analysis'])}\n"
-        f"sentiment_analysis: {json.dumps(context['sentiment_analysis'])}\n"
+        f"horizon_guidance: {context['horizon_guidance']}\n"
+        f"pillar_weights: {json.dumps(context['pillar_weights'])}\n"
         f"pillar_status: {json.dumps(context['pillar_status'])}\n"
-        f"errors: {json.dumps(context['errors'])}\n"
+        f"pillars: {json.dumps(context['pillars'], default=str)}\n"
+        f"baseline_verdict: {json.dumps(context['baseline_verdict'])}\n"
         f"tool_loop_count: {context['tool_loop_count']}\n"
         f"max_tool_loops: {context['max_tool_loops']}\n"
         f"enabled_rerun_tools: {json.dumps(list(context['enabled_rerun_tools']))}\n"
@@ -205,47 +211,57 @@ def extract_json_object(raw_text):
     return json.loads(match.group(0))
 
 
-def _parse_decision(raw_text):
+_DIRECTIONS = ("bullish", "neutral", "bearish")
+_CONFIDENCES = ("low", "medium", "high")
+
+
+def _points(values, limit=3):
+    return [str(v).strip()[:200] for v in (values or []) if str(v).strip()][:limit]
+
+
+def _parse_decision(raw_text, context):
     decision = extract_json_object(raw_text)
 
     if decision.get("decision") not in ("finalize", "call_tool"):
         raise LLMAgentError(f"invalid decision value: {decision.get('decision')!r}")
-    if decision["decision"] == "call_tool" and decision.get("selected_tool") not in config.ENABLED_RERUN_TOOLS:
+    if decision["decision"] == "call_tool" and decision.get("selected_tool") not in context["enabled_rerun_tools"]:
         raise LLMAgentError(f"invalid selected_tool for call_tool: {decision.get('selected_tool')!r}")
+
+    baseline = context["baseline_verdict"]
+    direction = decision.get("overall_direction")
+    if direction not in _DIRECTIONS:
+        raise LLMAgentError(f"invalid overall_direction: {direction!r}")
+    # The LLM may lean away from the weighted baseline, but not flip it outright.
+    if {direction, baseline["direction"]} == {"bullish", "bearish"}:
+        direction = baseline["direction"]
+    # Confidence may be lowered from the baseline, never raised above it.
+    confidence = baseline["confidence"]
+    if decision.get("confidence") in _CONFIDENCES:
+        confidence = _CONFIDENCES[min(_CONFIDENCES.index(decision["confidence"]), _CONFIDENCES.index(confidence))]
 
     return {
         "decision": decision["decision"],
         "selected_tool": decision.get("selected_tool") if decision["decision"] == "call_tool" else None,
-        "reason": decision.get("reason") or "",
         "tool_call_args": decision.get("tool_call_args") or {},
-        "requires_review": bool(decision.get("requires_review", False)),
+        "reason": str(decision.get("reason") or "").strip(),
+        "verdict": {
+            **baseline,
+            "direction": direction if baseline["direction"] is not None else None,
+            "confidence": confidence,
+            "key_drivers": _points(decision.get("key_drivers")) or baseline["key_drivers"],
+            "conflicts": _points(decision.get("conflicts")) or baseline["conflicts"],
+        },
     }
 
 
 def _fallback_decision(context, reason):
-    """Deterministic stand-in for the LLM Agent when Ollama can't be
-    reached or returns garbage. Never selects a rerun tool -- there's no
-    reasoning available here to justify which pillar rerunning would
-    help -- so it always finalizes, flagging requires_review whenever the
-    pillars disagree or any pillar's status isn't "ok", matching the
-    specification's own requires_review rule.
-    """
-    directions = {
-        d
-        for d in (
-            ((context["technical_analysis"] or {}).get("technical_signal") or {}).get("direction"),
-            ((context["fundamental_analysis"] or {}).get("composite") or {}).get("direction"),
-            (context["sentiment_analysis"] or {}).get("direction"),
-        )
-        if d is not None
-    }
-    disagreement = len(directions) > 1
-    any_unhealthy = any(status != "ok" for status in context["pillar_status"].values())
-
+    """Deterministic stand-in when the LLM cannot be reached or returns
+    garbage: finalize with the weighted baseline verdict. Never reruns a
+    pillar -- there is no reasoning available to justify which one."""
     return {
         "decision": "finalize",
         "selected_tool": None,
-        "reason": reason,
         "tool_call_args": {},
-        "requires_review": disagreement or any_unhealthy,
+        "reason": reason,
+        "verdict": dict(context["baseline_verdict"]),
     }

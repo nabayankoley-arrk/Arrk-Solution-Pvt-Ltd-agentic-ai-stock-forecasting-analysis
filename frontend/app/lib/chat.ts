@@ -16,15 +16,87 @@ export interface ChatMessage {
   // Only ever set on an "assistant" message built from a ChatApiResponse.
   responseType?: ChatApiResponse["response_type"];
   ticker?: string | null;
+  // Set while an assistant reply is still streaming in (see streamChat).
+  streaming?: boolean;
+  status?: string; // e.g. "Analysing TCS.NS..." -- shown until the first token arrives
+  // A clarification's choices, shown as buttons until one is picked.
+  options?: ClarificationOption[];
+}
+
+// One company the backend asks the user to choose between ("Mahindra" ->
+// Mahindra & Mahindra, Kotak Mahindra Bank, ...). Untracked ones are listed on
+// BSE but cannot be analysed here.
+export interface ClarificationOption {
+  ticker: string;
+  name: string;
+  tracked: boolean;
 }
 
 // Mirrors backend/main.py's ChatResponse (the POST /api/chat response body)
 // field for field, including the snake_case key FastAPI actually returns.
+// A "clarification" pauses the turn: the session's next message answers it.
 export interface ChatApiResponse {
   reply: string;
-  response_type: "analysis" | "out_of_scope" | "error";
+  response_type: "analysis" | "reply" | "clarification" | "error";
   session_id: string;
   ticker?: string | null;
+  options?: ClarificationOption[] | null;
+}
+
+export interface ChatRequestBody {
+  message: string;
+  user_id: string;
+  session_id?: string;
+}
+
+export interface StreamHandlers {
+  onStatus: (message: string) => void;
+  onToken: (text: string) => void;
+}
+
+// POST /api/chat/stream, read as Server-Sent Events (backend/main.py's
+// run_chat_stream): `status` while an analysis runs, `token` pieces of the
+// reply, then always `done` with the same body POST /api/chat returns --
+// resolved here, and authoritative over the tokens. fetch + a stream reader
+// rather than EventSource, which only supports GET.
+export async function streamChat(body: ChatRequestBody, handlers: StreamHandlers): Promise<ChatApiResponse> {
+  const response = await fetch("/api/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`Request failed (${response.status}): ${await response.text()}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+
+    let boundary;
+    while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+      const block = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+
+      let event = "message";
+      let data = "";
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if (!data) continue;
+      const payload = JSON.parse(data);
+
+      if (event === "status") handlers.onStatus(payload.message);
+      else if (event === "token") handlers.onToken(payload.text);
+      else if (event === "done") return payload as ChatApiResponse;
+    }
+  }
+  throw new Error("The response ended before the reply was complete.");
 }
 
 // crypto.randomUUID() is available in every evergreen browser and in the
@@ -36,6 +108,23 @@ export function uid(): string {
     return crypto.randomUUID();
   }
   return `id-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+// A stable per-browser id, sent as /api/chat's user_id so the backend's audit
+// log can group one browser's conversations. Falls back to a fresh id per page
+// load when localStorage is unavailable (private mode, blocked storage).
+const USER_ID_KEY = "stock-chat-user-id";
+
+export function getUserId(): string {
+  try {
+    const existing = localStorage.getItem(USER_ID_KEY);
+    if (existing) return existing;
+    const created = uid();
+    localStorage.setItem(USER_ID_KEY, created);
+    return created;
+  } catch {
+    return uid();
+  }
 }
 
 // The one message a fresh chat (initial load, or "New session") opens with.
@@ -52,14 +141,12 @@ export function newSessionMessage(): ChatMessage {
   };
 }
 
-// Sidebar's "Try asking" shortcuts. NSE-suffixed tickers and a keyword-only
-// follow-up, matching what the backend's parse_and_route.py actually resolves
-// (an explicit ticker, or one of config.STOCK_KEYWORDS against the watchlist
-// memory already established -- a follow-up with neither is routed
-// out_of_scope, so no example here is phrased that way).
+// Sidebar's "Try asking" shortcuts. The backend's LLM resolves company names
+// and follow-ups from the conversation, so plain phrasing works.
 export const EXAMPLE_PROMPTS: string[] = [
-  "How is TCS.NS looking today?",
-  "What's the trend for INFY.NS?",
-  "Is RELIANCE.NS a buy right now?",
-  "What is the latest forecast?",
+  "How is TCS looking today?",
+  "Where will Reliance be in a month?",
+  "How is Mahindra doing?",
+  "Which stock is good for a beginner?",
+  "What did Infosys management say on the last call?",
 ];

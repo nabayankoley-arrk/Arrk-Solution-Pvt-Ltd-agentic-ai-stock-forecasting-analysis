@@ -4,7 +4,7 @@ The "invalid input" case needs no database. The other case exercises
 fetch_transcript/fetch_annual_report for real, so it needs a Postgres
 instance with backend/db/schema.sql applied and at least one row in
 document_summaries for the ticker under test -- see
-backend/jobs/README.md to populate it (python -m jobs.summarise_reports).
+README.md (Jobs) to populate it (python -m jobs.summarise_reports).
 
 Without a reachable database, both fetches retry and then report
 "error"/"unavailable" for that source -- the graph's control flow still

@@ -1,93 +1,56 @@
-"""reconcile_and_decide — the Orchestrator's one LLM-driven node.
+"""reconcile_and_decide — the orchestrator's one LLM step.
 
-Builds the reconciliation context from the three baseline (or latest
-rerun) pillar results -- technical, fundamental, sentiment -- and asks
-the LLM Agent (llm_client.get_decision) to decide finalize vs. call_tool
-per the specification's "LLM Agent Decision Contract". Two things the
-contract entrusts to the LLM are re-checked
-deterministically here rather than trusted blindly, since getting either
-wrong would silently ship an unreviewed, disagreeing, or incomplete
-result:
+Gives the LLM compact digests of the planned pillars, the horizon's weights
+and guidance, and the deterministic weighted verdict (_verdict.py) as a
+baseline. It either reruns one planned pillar (bounded by
+config.MAX_TOOL_LOOPS) or finalizes with the verdict -- direction,
+confidence, key drivers, conflicts -- and a short explanation (`reason`,
+shown to the user as the narrative).
 
-  1. The MAX_TOOL_LOOPS loop guard -- if tripped, this forces
-     decision=finalize/requires_review=True itself rather than asking the
-     LLM Agent to notice and honor it.
-  2. requires_review being true whenever the pillars disagree or a pillar
-     is unhealthy -- the LLM Agent is asked to already set this, but this
-     node upgrades False to True if it detects either condition anyway.
+The LLM's verdict is checked against the baseline in llm_client._parse_decision:
+it may lean away from it but not flip bullish to bearish, and cannot claim
+high confidence when pillars conflict. When the loop guard trips or the LLM
+is unavailable, the baseline verdict is used as-is.
 """
 
 from .. import config
 from ..llm_client import get_decision
+from ._verdict import pillar_digests, weighted_verdict
 
-_DIRECTION_PATHS = {
-    "technical": ("technical_analysis", "technical_signal", "direction"),
-    "fundamental": ("fundamental_analysis", "composite", "direction"),
-    "sentiment": ("sentiment_analysis", "direction"),
-}
-
-
-def _pillar_direction(state, pillar):
-    value = state.get(_DIRECTION_PATHS[pillar][0])
-    for key in _DIRECTION_PATHS[pillar][1:]:
-        value = (value or {}).get(key)
-    return value
-
-
-def _pillars_disagree(state):
-    directions = {
-        direction
-        for direction in (_pillar_direction(state, pillar) for pillar in _DIRECTION_PATHS)
-        if direction is not None
-    }
-    return len(directions) > 1
-
-
-def _has_unresolved_failure(state):
-    pillar_status = state.get("pillar_status") or {}
-    return any(status != "ok" for status in pillar_status.values())
+_RERUN_TOOL_PILLAR = {"rerun_technical": "technical", "rerun_fundamental": "fundamental", "rerun_sentiment": "sentiment"}
 
 
 def reconcile_and_decide(state):
     tool_loop_count = state.get("tool_loop_count", 0)
-    loop_guard_tripped = tool_loop_count >= config.MAX_TOOL_LOOPS and not state.get("loop_guard_override")
+    baseline = weighted_verdict(state)
 
-    if loop_guard_tripped:
+    if tool_loop_count >= config.MAX_TOOL_LOOPS:
         return {
             "decision": "finalize",
             "selected_tool": None,
-            "reason": f"loop guard: reached MAX_TOOL_LOOPS ({config.MAX_TOOL_LOOPS}) without agreement",
             "tool_call_args": {},
-            "requires_review": True,
-            "loop_guard_override": False,
+            "reason": f"Reached the rerun limit ({config.MAX_TOOL_LOOPS}); using the weighted verdict.",
+            "verdict": baseline,
         }
 
+    planned = state.get("planned_pillars") or []
     context = {
         "ticker": state.get("ticker"),
         "horizon": state.get("horizon"),
-        "technical_analysis": state.get("technical_analysis"),
-        "fundamental_analysis": state.get("fundamental_analysis"),
-        "sentiment_analysis": state.get("sentiment_analysis"),
-        "pillar_status": state.get("pillar_status") or {},
-        "errors": state.get("errors") or {},
+        "horizon_guidance": config.HORIZON_GUIDANCE[state.get("horizon")],
+        "pillar_weights": state.get("pillar_weights") or {},
+        "pillars": pillar_digests(state),
+        "pillar_status": {p: s for p, s in (state.get("pillar_status") or {}).items() if p in planned},
+        "baseline_verdict": baseline,
         "tool_loop_count": tool_loop_count,
         "max_tool_loops": config.MAX_TOOL_LOOPS,
-        "enabled_rerun_tools": config.ENABLED_RERUN_TOOLS,
+        "enabled_rerun_tools": [t for t in config.ENABLED_RERUN_TOOLS if _RERUN_TOOL_PILLAR.get(t) in planned],
     }
     decision = get_decision(context)
-
-    requires_review = decision["requires_review"]
-    if decision["decision"] == "finalize" and not requires_review:
-        if _pillars_disagree(state) or _has_unresolved_failure(state):
-            requires_review = True
-            note = "(requires_review overridden to true: pillar disagreement or unresolved pillar failure detected)"
-            decision["reason"] = f"{decision['reason']} {note}".strip()
-
     return {
         "decision": decision["decision"],
         "selected_tool": decision["selected_tool"],
-        "reason": decision["reason"],
         "tool_call_args": decision["tool_call_args"],
-        "requires_review": requires_review,
-        "loop_guard_override": False,
+        "reason": decision["reason"],
+        "verdict": decision["verdict"],
     }

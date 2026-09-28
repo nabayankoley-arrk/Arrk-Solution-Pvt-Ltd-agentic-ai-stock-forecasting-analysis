@@ -1,14 +1,8 @@
 """Tunable constants for the Orchestrator Subgraph.
 
-The specification's "Technical Specifications" section names five
-configurable parameters (MAX_TOOL_LOOPS, ANALYSIS_HORIZON,
-ENABLED_RERUN_TOOLS, TOOL_CALL_TIMEOUT, HUMAN_REVIEW_TIMEOUT) but states
-"No numeric defaults for these parameters are defined in the supplied
-architecture diagram; they should be provided through deployment
-configuration." All five are read from the environment below, falling
-back to this implementation's own default (chosen for a reasonable
-local/dev setup, not a value taken from the specification itself) when
-unset.
+Every value is read from the environment, falling back to the default below.
+There is no human-review timeout: pillar disagreement is reported in the
+verdict's conflicts rather than paused on (see nodes/_verdict.py).
 
 The LLM provider settings (OLLAMA_*/OPENROUTER_*/LLM_*) aren't named in
 the specification, but are exactly as deployment-specific -- different
@@ -65,6 +59,44 @@ HORIZON_TO_PILLAR_PARAMS = {
     "long_term": {"lookback_days": 500, "ratio_basis": "TTM", "lookback_years": 7},
 }
 
+# --- plan_analysis: which pillars run for a horizon, and how much each counts ---
+# Short term is price action: fundamentals barely move a price over days to
+# weeks, so that pillar is skipped. Long term is the business: technicals keep
+# a small say (the primary trend), fundamentals lead.
+HORIZON_PLAN = {
+    "short_term": {"technical": 0.7, "sentiment": 0.3},
+    "medium_term": {"technical": 0.4, "fundamental": 0.35, "sentiment": 0.25},
+    "long_term": {"technical": 0.15, "fundamental": 0.6, "sentiment": 0.25},
+}
+
+# What each horizon means for the reconciliation prompt (llm_client.py).
+HORIZON_GUIDANCE = {
+    "short_term": "days to a few weeks: price action, momentum, support/resistance and recent "
+                  "management commentary matter most; fundamentals are not considered.",
+    "medium_term": "a few months: trend and momentum, earnings quality and valuation, and "
+                   "management's outlook all matter.",
+    "long_term": "a year or more: business quality, growth, balance sheet and valuation lead; "
+                 "technicals only show the primary trend.",
+}
+
+# forecast_days -> horizon, when a caller asks for a forecast without a horizon.
+SHORT_TERM_MAX_DAYS = _env_int("SHORT_TERM_MAX_DAYS", 14)
+MEDIUM_TERM_MAX_DAYS = _env_int("MEDIUM_TERM_MAX_DAYS", 120)
+
+
+def horizon_for_days(days):
+    if days <= SHORT_TERM_MAX_DAYS:
+        return "short_term"
+    return "medium_term" if days <= MEDIUM_TERM_MAX_DAYS else "long_term"
+
+
+# --- the verdict (nodes/_verdict.py) ---
+# A weighted direction score within +/- this band reads as neutral.
+VERDICT_NEUTRAL_BAND = _env_float("VERDICT_NEUTRAL_BAND", 0.2)
+# Confidence is "low" when pillars carrying at least this share of the available
+# weight point against the verdict; a smaller dissent only makes it "medium".
+VERDICT_LOW_CONFIDENCE_OPPOSITION = _env_float("VERDICT_LOW_CONFIDENCE_OPPOSITION", 0.35)
+
 MAX_TOOL_LOOPS = _env_int("MAX_TOOL_LOOPS", 3)
 
 ENABLED_RERUN_TOOLS = _env_tuple(
@@ -73,8 +105,6 @@ ENABLED_RERUN_TOOLS = _env_tuple(
 
 # --- execute_tool_call ---
 TOOL_CALL_TIMEOUT_SECONDS = _env_int("TOOL_CALL_TIMEOUT_SECONDS", 30)
-
-HUMAN_REVIEW_TIMEOUT_SECONDS = _env_int("HUMAN_REVIEW_TIMEOUT_SECONDS", 3600)
 
 OLLAMA_BASE_URL = _env_str("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = _env_str("OLLAMA_MODEL", "llama3.2:3b")
@@ -92,6 +122,29 @@ LLM_PROVIDER = _env_str("LLM_PROVIDER", "openrouter")
 LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", 0.1)  # low: structured routing decision, not creative writing
 
 LLM_FALLBACK_ENABLED = _env_bool("LLM_FALLBACK_ENABLED", True)
+
+# --- forecast_price_range: the volatility baseline the LLM's range is anchored on ---
+# Baseline = centre * exp(+/- FORECAST_SIGMA_MULTIPLIER * sigma * sqrt(trading days)),
+# sigma being the daily return volatility; 1.0 is roughly a 68% range.
+FORECAST_SIGMA_MULTIPLIER = _env_float("FORECAST_SIGMA_MULTIPLIER", 1.0)
+TRADING_DAYS_PER_YEAR = 252
+# How far the verdict may shift the baseline's centre, as a share of its half-width.
+FORECAST_TILT = _env_float("FORECAST_TILT", 0.3)
+# Short-term forecasts (up to SHORT_TERM_MAX_DAYS) are not shifted at all: their
+# verdict is 70% the technical signal, which showed no directional edge in the
+# backtest (jobs/backtest_forecasts.py: ~48% right vs ~50% by chance), and
+# shifting toward it lowered the range's hit rate. Set True to shift them again.
+FORECAST_TILT_SHORT_TERM = _env_bool("FORECAST_TILT_SHORT_TERM", False)
+# The LLM's range must lie within this many baseline half-widths of the centre.
+FORECAST_MAX_BAND_MULTIPLE = _env_float("FORECAST_MAX_BAND_MULTIPLE", 2.0)
+# Beyond this, a price range says nothing useful: no range is given.
+FORECAST_MAX_DAYS = _env_int("FORECAST_MAX_DAYS", 730)
+# From this horizon, the centre moves toward the analysts' average (12-month)
+# target -- up to FORECAST_ANALYST_MAX_PULL of the way at a year -- when at
+# least FORECAST_ANALYST_MIN_COUNT analysts cover the stock.
+FORECAST_ANALYST_FROM_DAYS = _env_int("FORECAST_ANALYST_FROM_DAYS", 180)
+FORECAST_ANALYST_MAX_PULL = _env_float("FORECAST_ANALYST_MAX_PULL", 0.5)
+FORECAST_ANALYST_MIN_COUNT = _env_int("FORECAST_ANALYST_MIN_COUNT", 5)
 
 FORECAST_DISCLAIMER = (
     "This is a qualitative estimate reasoned by an LLM Agent from existing technical, fundamental, and "

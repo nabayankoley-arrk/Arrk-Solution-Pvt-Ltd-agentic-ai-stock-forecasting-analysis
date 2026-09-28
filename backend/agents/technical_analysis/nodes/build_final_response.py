@@ -23,6 +23,8 @@ def build_final_response(state):
         "technical_signal": state.get("technical_signal"),
         "confidence": state.get("confidence"),
         "support_resistance": state.get("support_resistance"),
+        # ATR and Bollinger detail -- the orchestrator's price forecast is anchored on the ATR.
+        "volatility": state.get("volatility"),
         "candlestick_pattern": state.get("candlestick_pattern"),
         "pattern_direction": state.get("pattern_direction"),
         "trade_setup": trade_setup,

@@ -1,7 +1,7 @@
 """execute_tool_call — deterministic orchestration step.
 
 Dispatches to whichever pillar rerun tool reconcile_and_decide (or a
-reviewer, via request_human_review) selected, bounded by
+selected, bounded by
 TOOL_CALL_TIMEOUT_SECONDS, and folds the refreshed pillar result back into
 state before control returns to reconcile_and_decide. The tools
 (rerun_technical/rerun_fundamental/rerun_sentiment) are plain functions

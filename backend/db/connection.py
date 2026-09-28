@@ -6,7 +6,7 @@ project's local tooling -- rather than hardcoding any default credentials
 here. Set these in your shell or a local, gitignored .env before importing
 this module; see backend/db/schema.sql for the schema to load first.
 
-Every current caller (agents/chat_intent_routing/nodes/load_user_memory.py,
+Every current caller (agents/chat_intent_routing/nodes/_ticker_lookup.py,
 agents/orchestrator/nodes/_current_price.py,
 agents/fundamental_analysis/nodes/fetch_fundamentals_data.py) already
 catches psycopg2.OperationalError specifically to degrade gracefully

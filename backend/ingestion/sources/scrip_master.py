@@ -107,6 +107,14 @@ def load(client, cache_dir=None, refresh=False):
         if cached is not None:
             return cached
 
+    # Visiting the page a browser would come from first picks up the cookies
+    # BSE's bot protection sets; without them the API can answer 403. Best
+    # effort: if the page itself fails, the API call below reports the problem.
+    try:
+        client.get(LIST_REFERER).close()
+    except SourceUnavailable:
+        pass
+
     payload = client.get_json(LIST_URL, params={
         "Group": "", "Scripcode": "", "industry": "", "segment": "Equity", "status": "Active",
     }, referer=LIST_REFERER)

@@ -1,47 +1,17 @@
-"""Sentiment Analysis Agent -- Request-Time Subgraph, transcript + annual report only.
+"""Sentiment Analysis Agent: sentiment from a company's annual report and call transcript.
 
-Implements a deliberately narrowed slice of the Sentiment Analysis
-Subgraph specification's Request-Time Subgraph: the transcript and
-annual-report sources only. News (a continuously-refreshed, high-volume
-source needing its own periodic ingestion and a live Tavily fallback) is
-out of scope here -- wiring it in later only means adding a third
-fetch_news/score_news_sentiment branch alongside the two below and giving
-it a weight in config.SOURCE_WEIGHTS, not restructuring this package.
+Reads document_summaries, which jobs/summarise_reports.py fills with one
+summary per filing. For one ticker, the latest stored transcript and annual
+report are fetched and each is given a sentiment profile -- overall label,
+management tone, guidance, per-theme stances, positives, concerns and quotes
+(prompts.py, profile.py) -- built once from the stored summary with one LLM
+call and cached on the row. The two labels are combined into one
+recency-weighted direction (graph.py).
 
-"Coverage report" (third-party analyst notes) does not exist as a
-document type this project ingests -- backend/jobs/summarise_reports.py
-(see its own README) fetches only annual reports and call transcripts,
-per company, from BSE/company sites. This package uses that same
-annual-report slot in place of the specification's coverage-report
-source, scored on its own bullish/neutral/bearish scale rather than the
-specification's coverage "thesis/reasoning" scale (an annual report
-carries no analyst rating to reason about).
+News and third-party coverage reports are not ingested, so they are not
+sources here. A ticker with no stored filing reports that source as
+"unavailable".
 
-Two other differences from the full specification, both consequences of
-what jobs/summarise_reports.py actually built (see its README and
-backend/db/schema.sql's document_summaries table):
-
-  - No separate ingestion-time embedding/scoring pipeline or vector DB.
-    document_summaries already holds one summarised row per document,
-    keyed on sha256 -- this subgraph scores that stored summary directly
-    at request time and writes the label back onto the same row (see
-    db.upsert.save_document_sentiment), so a second request for the same
-    document is a cache hit. That is the specification's "Document
-    already carries a stored score -> pass it through unchanged" /
-    "RESCORE_ON_CACHE_MISS = true" edges collapsed into one path, since
-    there is no separate ingestion-time Score step to have already run.
-
-  - No live Tavily fallback on a cache miss. A ticker with no ingested
-    transcript or annual report simply reports that source as
-    "unavailable" -- ingestion (jobs.summarise_reports) is what's meant
-    to keep document_summaries current ahead of a request, per the
-    specification's own Architecture section.
-
-`build_graph()` in `graph.py` assembles the compiled LangGraph state
-graph; agents/orchestrator/nodes/_pillar_runners.run_sentiment is the one
-caller.
+Import the graph from .graph (agents/orchestrator/nodes/_pillar_runners does);
+this package deliberately does not build it on import.
 """
-
-from .graph import build_graph
-
-__all__ = ["build_graph"]

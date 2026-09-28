@@ -2,7 +2,7 @@
 
 Scope is deliberately narrow: find a company's documents, decide which are
 wanted, and write those PDFs to disk. Nothing here parses a PDF or writes to
-the database -- see ingestion/README.md for why.
+the database -- see the root README.md (Document fetcher) for why.
 """
 
 from .downloader import download, select

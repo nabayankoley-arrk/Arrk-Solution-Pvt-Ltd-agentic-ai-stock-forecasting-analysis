@@ -1,15 +1,19 @@
 import { Bot, User } from "lucide-react";
-import type { ChatMessage } from "../lib/chat";
+import type { ChatMessage, ClarificationOption } from "../lib/chat";
 
 const BADGE_STYLES: Record<string, string> = {
   analysis:
     "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400",
+  reply: "bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-400",
+  clarification: "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400",
   out_of_scope: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400",
   error: "bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400",
 };
 
 const BADGE_LABEL: Record<string, string> = {
   analysis: "analysis",
+  reply: "reply",
+  clarification: "question",
   out_of_scope: "out of scope",
   error: "error",
 };
@@ -27,7 +31,56 @@ function ResponseBadge({ responseType }: { responseType: string }) {
   );
 }
 
-export default function MessageBubble({ message }: { message: ChatMessage }) {
+// The model is asked for plain text but free models still write some markdown:
+// render **bold**, and show "# Heading" lines as bold text. Everything else is
+// left as typed (the bubble keeps line breaks and "- " list lines as they are).
+function renderText(content: string) {
+  return content.split("\n").map((line, lineIndex, lines) => {
+    const heading = /^#{1,6}\s+(.*)$/.exec(line);
+    const text = heading ? `**${heading[1]}**` : line;
+    const parts = text.split(/(\*\*[^*\n]+\*\*)/g).map((part, partIndex) =>
+      part.startsWith("**") && part.endsWith("**") && part.length > 4 ? (
+        <strong key={partIndex}>{part.slice(2, -2)}</strong>
+      ) : (
+        part
+      ),
+    );
+    return (
+      <span key={lineIndex}>
+        {parts}
+        {lineIndex < lines.length - 1 ? "\n" : null}
+      </span>
+    );
+  });
+}
+
+// Before the first token: bouncing dots, plus the backend's progress status
+// ("Analysing TCS.NS...") while an analysis runs.
+function TypingIndicator({ status }: { status?: string }) {
+  return (
+    <span className="flex items-center gap-2" role="status" aria-live="polite">
+      <span className="flex items-center gap-1 py-1.5">
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400" />
+      </span>
+      {status ? (
+        <span className="text-xs italic text-slate-500 dark:text-slate-400">{status}</span>
+      ) : (
+        <span className="sr-only">Assistant is typing</span>
+      )}
+    </span>
+  );
+}
+
+// onOption is set only while this message's clarification is still open.
+export default function MessageBubble({
+  message,
+  onOption,
+}: {
+  message: ChatMessage;
+  onOption?: (option: ClarificationOption) => void;
+}) {
   if (message.role === "system") {
     return (
       <div className="flex justify-center">
@@ -62,8 +115,39 @@ export default function MessageBubble({ message }: { message: ChatMessage }) {
               : "rounded-tl-sm border border-slate-200 bg-white text-slate-800 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100")
           }
         >
-          {message.content}
+          {message.streaming && !message.content ? (
+            <TypingIndicator status={message.status} />
+          ) : (
+            <>
+              {isUser ? message.content : renderText(message.content)}
+              {message.streaming ? (
+                <span className="ml-0.5 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-slate-400" />
+              ) : null}
+            </>
+          )}
         </div>
+        {message.options?.length ? (
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {message.options.map((option) => (
+              <button
+                key={option.ticker}
+                type="button"
+                onClick={() => onOption?.(option)}
+                disabled={!onOption}
+                className={
+                  "rounded-full border px-3 py-1 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50 " +
+                  (option.tracked
+                    ? "border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-300"
+                    : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400")
+                }
+                title={option.tracked ? undefined : "Listed, but not tracked here, so it can't be analysed"}
+              >
+                {option.name}
+                {option.tracked ? null : <span className="ml-1 opacity-70">(not tracked)</span>}
+              </button>
+            ))}
+          </div>
+        ) : null}
         {message.responseType || message.ticker ? (
           <div className="flex items-center gap-1.5 px-1">
             {message.responseType ? <ResponseBadge responseType={message.responseType} /> : null}

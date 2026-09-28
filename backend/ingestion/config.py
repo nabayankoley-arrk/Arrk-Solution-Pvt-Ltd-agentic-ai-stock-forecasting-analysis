@@ -12,6 +12,9 @@ REQUEST_HEADERS = {
     ),
     "Accept": "text/html,application/json,application/pdf,*/*",
     "Accept-Language": "en-US,en;q=0.9",
+    # BSE's API sits behind bot protection that answers 403 to requests
+    # lacking the Origin a browser on www.bseindia.com would send.
+    "Origin": "https://www.bseindia.com",
 }
 
 # --- politeness and resilience ---

@@ -211,75 +211,12 @@ def save_orchestrator_run(record):
         )
 
 
-def save_conversation_session(session_id, last_ticker, last_horizon, last_scope):
-    """Upserts conversation_sessions -- the Chat Intent & Routing
-    Subgraph specification's update_session_context node's own
-    persistence ("Writes: updated_context, and the underlying session
-    store"). Only called on a normal completed turn (see
-    nodes/update_session_context.py), matching the specification's
-    Architecture note that session state, like user memory, is only
-    updated after a real result is produced.
-    """
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO conversation_sessions (session_id, last_ticker, last_horizon, last_scope, updated_at)
-            VALUES (%s, %s, %s, %s, NOW())
-            ON CONFLICT (session_id) DO UPDATE SET
-                last_ticker = EXCLUDED.last_ticker,
-                last_horizon = EXCLUDED.last_horizon,
-                last_scope = EXCLUDED.last_scope,
-                updated_at = NOW()
-            """,
-            (session_id, last_ticker, last_horizon, Json(last_scope)),
-        )
-
-
-def append_conversation_message(session_id, role, content):
-    """Appends one row to conversation_messages -- the specification's
-    own "Optional, for audit/debugging conversation flow" table. This
-    project also uses it as the source `nodes/load_conversation_context.py`
-    hydrates conversation_history from on a caller's next request, since a
-    stateless HTTP endpoint has nowhere else to recover a session's prior
-    turns from (see that module's docstring). Ensures conversation_sessions
-    has a row first (FK requirement) via a no-op upsert of just session_id.
-    """
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO conversation_sessions (session_id)
-            VALUES (%s)
-            ON CONFLICT (session_id) DO NOTHING
-            """,
-            (session_id,),
-        )
-        cur.execute(
-            "SELECT COALESCE(MAX(turn_index), -1) + 1 FROM conversation_messages WHERE session_id = %s",
-            (session_id,),
-        )
-        next_turn_index = cur.fetchone()[0]
-        cur.execute(
-            """
-            INSERT INTO conversation_messages (session_id, turn_index, role, content)
-            VALUES (%s, %s, %s, %s)
-            """,
-            (session_id, next_turn_index, role, content),
-        )
-
-
 def save_conversation_turn(record):
-    """Appends one row to "Memory".conversation_history -- the storage
-    agents/chat_intent_routing/nodes/persist_conversation_turn.py needs
-    (and agents/chat_intent_routing/nodes/load_conversation_history.py
-    reads back, ordered by created_at per user_id). That subgraph is
-    Sourabh Shetti's implementation; this function only supplies the
-    database-layer dependency it already expects by name -- it does not
-    change anything under agents/chat_intent_routing itself. See
-    db/schema.sql for the table this writes to.
+    """Appends one row to "Memory".conversation_history, the append-only turn
+    log written by agents/chat_intent_routing/nodes/persist_conversation_turn.py.
 
     record: {"turn_id", "user_id", "thread_id", "message", "intent",
-    "resolved_ticker", "response"} -- exactly the dict
-    persist_conversation_turn.py already builds.
+    "resolved_ticker", "response"}
     """
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -298,21 +235,6 @@ def save_conversation_turn(record):
                 record.get("resolved_ticker"),
                 Json(record.get("response")),
             ),
-        )
-
-
-def save_user_memory(user_id, memory):
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO "Memory".user_memory (user_id, watchlist, preferences, updated_at)
-            VALUES (%s, %s, %s, NOW())
-            ON CONFLICT (user_id) DO UPDATE SET
-                watchlist = EXCLUDED.watchlist,
-                preferences = EXCLUDED.preferences,
-                updated_at = NOW()
-            """,
-            (user_id, Json(memory.get("watchlist")), Json(memory.get("preferences"))),
         )
 
 
@@ -414,6 +336,7 @@ def latest_document_summary(scrip_code, report_type):
 
 
 _DOCUMENT_SUMMARY_BY_TICKER_COLUMNS = (
+    "company_name",
     "report_name",
     "filed_on",
     "summary",
@@ -421,8 +344,8 @@ _DOCUMENT_SUMMARY_BY_TICKER_COLUMNS = (
     "sha256",
     "model",
     "created_at",
-    "sentiment_label",
-    "sentiment_rationale",
+    "sentiment_profile",
+    "sentiment_prompt_version",
 )
 
 
@@ -438,10 +361,10 @@ def latest_document_summary_by_ticker(ticker, report_type):
     before calling this. Hence two lookups over one table rather than making
     either caller translate between registries.
 
-    Returns a dict, or None when nothing is stored. `sentiment_label` and
-    `sentiment_rationale` come back so _score_helpers.py can serve a cached
-    verdict without a second query; both are NULL until save_document_sentiment
-    fills them in.
+    Returns a dict, or None when nothing is stored. `sentiment_profile` and
+    `sentiment_prompt_version` come back so _score_helpers.py can serve a
+    cached profile without a second query; both are NULL until
+    save_document_sentiment fills them in.
     """
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -460,16 +383,11 @@ def latest_document_summary_by_ticker(ticker, report_type):
     return dict(zip(_DOCUMENT_SUMMARY_BY_TICKER_COLUMNS, row))
 
 
-def save_document_sentiment(sha256, label, rationale, model):
-    """Caches one document's LLM sentiment verdict back onto its own row, so
-    the next request for it is served without paying for the call again (see
-    agents/sentiment_analysis/nodes/_score_helpers.py, which calls this
-    best-effort and still returns the score if it fails).
-
-    Keyed on sha256 -- document_summaries' natural key for a specific PDF, and
-    UNIQUE -- so re-summarising the same file overwrites rather than
-    duplicating. A sha256 with no matching row updates nothing and raises
-    nothing; the caller has the score either way.
+def save_document_sentiment(sha256, profile, prompt_version, model):
+    """Stores one document's sentiment profile (agents/sentiment_analysis/
+    profile.py) on its own row, so it is built once per document and prompt
+    version. Keyed on sha256; a sha256 with no matching row updates nothing and
+    raises nothing -- callers still have the profile either way.
     """
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -477,10 +395,13 @@ def save_document_sentiment(sha256, label, rationale, model):
             UPDATE document_summaries
             SET sentiment_label = %s,
                 sentiment_rationale = %s,
+                sentiment_profile = %s,
+                sentiment_prompt_version = %s,
                 sentiment_model = %s,
                 sentiment_scored_at = NOW(),
                 updated_at = NOW()
             WHERE sha256 = %s
             """,
-            (label, rationale, model, sha256),
+            (profile["label"], profile["rationale"], Json(profile), prompt_version, model, sha256),
         )
+

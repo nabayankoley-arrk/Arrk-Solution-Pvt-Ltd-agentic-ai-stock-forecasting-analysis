@@ -29,20 +29,20 @@ class SentimentAnalysisState(TypedDict, total=False):
     validation_error: Optional[str]
 
     # --- fetch_transcript / fetch_annual_report ---
-    # Each doc: {sha256, report_name, filed_on, summary, source_url,
-    # sentiment_label, sentiment_rationale, sentiment_model, created_at,
-    # age_days} or None when that source is unavailable.
+    # Each doc: a document_summaries row -- {company_name, report_name, filed_on,
+    # summary, source_url, sha256, model, created_at, sentiment_profile,
+    # sentiment_prompt_version, age_days} -- or None when that source is unavailable.
     transcript_doc: Optional[dict]
     annual_report_doc: Optional[dict]
 
     pillar_status: Annotated[dict, _merge_dicts]  # {"transcript": "ok"|"unavailable"|"error", "annual_report": ...}
     errors: Annotated[dict, _merge_dicts]  # {"transcript": "reason" | None, "annual_report": ...}
 
-    # --- score_transcript_tone / score_annual_report_sentiment ---
-    # Each: {"label": str, "direction": "bullish"|"neutral"|"bearish", "rationale": str,
-    # "citation": str, "source": "cached"|"scored"|"error"} or None when the doc was unavailable.
-    transcript_tone: Optional[dict]
-    annual_report_sentiment: Optional[dict]
+    # --- score_transcript / score_annual_report ---
+    # Each: {"label", "direction", "profile", "citation", "source": "cached"|"scored"|"error"}
+    # (see nodes/_score_helpers.py), or None when the doc was unavailable.
+    transcript_score: Optional[dict]
+    annual_report_score: Optional[dict]
 
     # --- combine_sentiment_signals ---
     combined_sentiment: Optional[dict]
