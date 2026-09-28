@@ -1,17 +1,12 @@
 """LLM Agent client for reconcile_and_decide.
 
-Talks to whichever provider config.LLM_PROVIDER selects. OpenRouter
-(https://openrouter.ai, hosted -- see config.py's OPENROUTER_* block) is
-the hard default; a locally running Ollama server
-(https://ollama.com, free/local) remains available as an opt-in fallback
-for offline/local dev -- set LLM_PROVIDER=ollama in the environment to use
-it.
-Both are OpenAI-style chat completion APIs, but with different endpoint
-shapes (Ollama's /api/chat vs. OpenRouter's OpenAI-compatible
-/chat/completions) and auth (Ollama: none, local-only; OpenRouter: Bearer
-API key), so each gets its own small request-building function below;
-call_llm_chat() is the one provider-agnostic entry point everything else
-in this package should use.
+Talks to whichever provider config.LLM_PROVIDER selects: OpenAI (the
+default) or OpenRouter -- both OpenAI-compatible /chat/completions APIs with a
+Bearer key, so they share one request function (config.hosted_provider()
+supplies the URL, key and model) -- or a local Ollama server
+(LLM_PROVIDER=ollama), which has its own /api/chat shape and no auth.
+call_llm_chat() is the one provider-agnostic entry point everything else in
+this package should use.
 
 Neither provider's tool-calling support is depended on here -- it's
 model-specific and inconsistent across the free/cheap models this is
@@ -100,14 +95,14 @@ def get_decision(context):
 def call_llm_chat(system_prompt, user_prompt, timeout=None):
     """Shared chat call -- any caller's system/user prompt pair, routed to
     whichever provider config.LLM_PROVIDER selects. Raises requests' usual
-    exceptions on a network error or non-2xx response (or ValueError if
-    LLM_PROVIDER is neither "ollama" nor "openrouter"); callers decide how
-    to handle that (get_decision falls back to a deterministic rule, see
-    module docstring).
+    exceptions on a network error or non-2xx response (or ValueError for an
+    unknown LLM_PROVIDER); callers decide how to handle that (get_decision
+    falls back to a deterministic rule, see module docstring).
     """
-    if config.LLM_PROVIDER == "openrouter":
-        model = config.OPENROUTER_MODEL
-        raw = _call_openrouter_chat(system_prompt, user_prompt, timeout or config.OPENROUTER_TIMEOUT_SECONDS)
+    hosted = config.hosted_provider()
+    if hosted:
+        model = hosted["model"]
+        raw = _call_hosted_chat(hosted, system_prompt, user_prompt, timeout or hosted["timeout"])
     elif config.LLM_PROVIDER == "ollama":
         model = config.OLLAMA_MODEL
         raw = _call_ollama_chat(system_prompt, user_prompt, timeout or config.OLLAMA_TIMEOUT_SECONDS)
@@ -148,27 +143,25 @@ def _call_ollama_chat(system_prompt, user_prompt, timeout):
     return response.json()["message"]["content"]
 
 
-def _call_openrouter_chat(system_prompt, user_prompt, timeout):
-    """OpenRouter's /chat/completions is OpenAI-compatible, unlike Ollama's
-    /api/chat -- different envelope (choices[0].message.content, not
-    message.content directly) and Bearer-token auth instead of no auth at
-    all. config.OPENROUTER_API_KEY is read from the environment only (see
-    config.py) -- raises here rather than sending an unauthenticated
-    request if it was never set.
+def _call_hosted_chat(hosted, system_prompt, user_prompt, timeout):
+    """OpenRouter's and OpenAI's /chat/completions (OpenAI-compatible, unlike
+    Ollama's /api/chat): choices[0].message.content, Bearer-token auth. The key
+    is read from the environment only (see config.py) -- raises here rather
+    than sending an unauthenticated request if it was never set.
     """
-    if not config.OPENROUTER_API_KEY:
-        raise LLMAgentError("OPENROUTER_API_KEY is not set (required when LLM_PROVIDER=openrouter)")
+    if not hosted["api_key"]:
+        raise LLMAgentError(f"{hosted['key_name']} is not set (required when LLM_PROVIDER={config.LLM_PROVIDER})")
 
     response = requests.post(
-        f"{config.OPENROUTER_BASE_URL}/chat/completions",
-        headers={"Authorization": f"Bearer {config.OPENROUTER_API_KEY}"},
+        f"{hosted['base_url']}/chat/completions",
+        headers={"Authorization": f"Bearer {hosted['api_key']}"},
         json={
-            "model": config.OPENROUTER_MODEL,
+            "model": hosted["model"],
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "temperature": config.LLM_TEMPERATURE,
+            **config.model_params(),  # temperature, or reasoning_effort for reasoning models
         },
         timeout=timeout,
     )

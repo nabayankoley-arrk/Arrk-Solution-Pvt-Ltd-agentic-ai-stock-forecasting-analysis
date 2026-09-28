@@ -142,13 +142,23 @@ DB_NAME=stock_analysis
 DB_USER=postgres
 DB_PASSWORD=<the password from step 1>
 
-LLM_PROVIDER=openrouter
+LLM_PROVIDER=openai
+OPENAI_API_KEY=<your key>
+OPENAI_MODEL=gpt-5.6-sol
+
+# optional: the free OpenRouter model, used when LLM_PROVIDER=openrouter
 OPENROUTER_API_KEY=<your key>
 OPENROUTER_MODEL=inclusionai/ling-3.0-flash-fin:free
 ```
 
-Models ending `:free` draw on a separate daily allowance, so they keep working
-after a key's spend limit is exhausted.
+OpenAI is the default provider. `LLM_PROVIDER` picks the one in use —
+`openai`, `openrouter` or `ollama` (a local model) — and every LLM call
+switches together: the chat agent, the verdict, the forecast, sentiment
+profiles and the summarisation job. Keep all the keys in the file and change
+only that line (then restart the backend). Use a chat model with tool calling
+(tested: gpt-5.6-sol/luna/terra, gpt-5.5, gpt-5.4-mini, gpt-4o-mini; GPT-5+ get
+`reasoning_effort=none` instead of `temperature`; GPT-6 needs the Responses API, not yet supported). OpenRouter models ending `:free` cost nothing but are
+rate-limited.
 
 Optional, for web news about companies that are not tracked (either one):
 

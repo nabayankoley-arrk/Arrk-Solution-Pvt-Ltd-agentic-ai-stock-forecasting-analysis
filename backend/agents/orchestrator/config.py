@@ -115,9 +115,50 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")  # required only w
 OPENROUTER_MODEL = _env_str("OPENROUTER_MODEL", "inclusionai/ling-3.0-flash-fin:free")
 OPENROUTER_TIMEOUT_SECONDS = _env_int("OPENROUTER_TIMEOUT_SECONDS", 60)
 
-# OpenRouter is the hard default; set LLM_PROVIDER=ollama in the environment
-# to opt into the local/offline fallback path instead.
-LLM_PROVIDER = _env_str("LLM_PROVIDER", "openrouter")
+OPENAI_BASE_URL = _env_str("OPENAI_BASE_URL", "https://api.openai.com/v1")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")  # required only when LLM_PROVIDER=openai
+OPENAI_MODEL = _env_str("OPENAI_MODEL", "gpt-5.6-sol")
+OPENAI_TIMEOUT_SECONDS = _env_int("OPENAI_TIMEOUT_SECONDS", 60)
+
+# openai (default) | openrouter | ollama (local/offline).
+LLM_PROVIDER = _env_str("LLM_PROVIDER", "openai")
+PROVIDERS = ("openrouter", "openai", "ollama")
+
+
+def hosted_provider():
+    """The active OpenAI-compatible hosted provider as
+    {"base_url", "api_key", "model", "timeout", "key_name"}, or None for Ollama.
+    OpenRouter and OpenAI share one request format, so every caller builds the
+    same /chat/completions request from this."""
+    if LLM_PROVIDER == "openrouter":
+        return {"base_url": OPENROUTER_BASE_URL, "api_key": OPENROUTER_API_KEY, "model": OPENROUTER_MODEL,
+                "timeout": OPENROUTER_TIMEOUT_SECONDS, "key_name": "OPENROUTER_API_KEY"}
+    if LLM_PROVIDER == "openai":
+        return {"base_url": OPENAI_BASE_URL, "api_key": OPENAI_API_KEY, "model": OPENAI_MODEL,
+                "timeout": OPENAI_TIMEOUT_SECONDS, "key_name": "OPENAI_API_KEY"}
+    return None
+
+
+def active_model():
+    """The model name in use, for logs and for recording which model built a result."""
+    hosted = hosted_provider()
+    return hosted["model"] if hosted else OLLAMA_MODEL
+
+
+# OpenAI's reasoning models (GPT-5 and later, o-series) reject any temperature
+# but the default, and on the gpt-5.6 models function tools in
+# /chat/completions need reasoning_effort="none". They get reasoning_effort
+# (OPENAI_REASONING_EFFORT; "none" = no hidden reasoning step, fastest) and no
+# temperature; older chat models (gpt-4o, gpt-4.1) keep LLM_TEMPERATURE.
+REASONING_MODEL_PREFIXES = _env_tuple("REASONING_MODEL_PREFIXES", ("gpt-5", "gpt-6", "o1", "o3", "o4"))
+OPENAI_REASONING_EFFORT = _env_str("OPENAI_REASONING_EFFORT", "none")
+
+
+def model_params():
+    """Sampling parameters for a hosted request to the active model."""
+    if LLM_PROVIDER == "openai" and active_model().startswith(REASONING_MODEL_PREFIXES):
+        return {"reasoning_effort": OPENAI_REASONING_EFFORT} if OPENAI_REASONING_EFFORT else {}
+    return {"temperature": LLM_TEMPERATURE}
 
 LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", 0.1)  # low: structured routing decision, not creative writing
 

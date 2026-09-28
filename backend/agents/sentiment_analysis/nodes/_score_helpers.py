@@ -25,9 +25,7 @@ from ..profile import build_profile
 def _model_label():
     from agents.orchestrator import config as llm_config
 
-    if llm_config.LLM_PROVIDER == "ollama":
-        return f"ollama/{llm_config.OLLAMA_MODEL}"
-    return f"{llm_config.LLM_PROVIDER}/{llm_config.OPENROUTER_MODEL}"
+    return f"{llm_config.LLM_PROVIDER}/{llm_config.active_model()}"
 
 
 def _score(profile, doc, source):

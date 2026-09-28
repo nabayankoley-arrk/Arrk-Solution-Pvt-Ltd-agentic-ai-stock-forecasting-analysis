@@ -109,9 +109,7 @@ class NotConfigured(RuntimeError):
 
 def describe_provider():
     """Provider and model in use, for a run to report before it starts."""
-    if llm_config.LLM_PROVIDER == "ollama":
-        return f"ollama / {llm_config.OLLAMA_MODEL}"
-    return f"{llm_config.LLM_PROVIDER} / {llm_config.OPENROUTER_MODEL}"
+    return f"{llm_config.LLM_PROVIDER} / {llm_config.active_model()}"
 
 
 def check_ready():
@@ -120,15 +118,14 @@ def check_ready():
     Checked before any downloading, so a missing key costs a second rather than
     surfacing after twenty documents have been fetched and read.
     """
-    if llm_config.LLM_PROVIDER == "openrouter" and not llm_config.OPENROUTER_API_KEY:
+    hosted = llm_config.hosted_provider()
+    if hosted and not hosted["api_key"]:
         raise NotConfigured(
-            "OPENROUTER_API_KEY is not set, and LLM_PROVIDER is openrouter.\n"
-            "Put it in backend/.env (loaded by bootstrap.py, and gitignored):\n"
-            "  OPENROUTER_API_KEY=...\n"
-            "  OPENROUTER_MODEL=inclusionai/ling-3.0-flash-fin:free\n"
-            "Or set LLM_PROVIDER=ollama to use a local model instead."
+            f"{hosted['key_name']} is not set, and LLM_PROVIDER is {llm_config.LLM_PROVIDER}.\n"
+            "Put it in backend/.env (loaded by bootstrap.py, and gitignored), or set\n"
+            "LLM_PROVIDER=ollama to use a local model instead."
         )
-    if llm_config.LLM_PROVIDER not in ("openrouter", "ollama"):
+    if llm_config.LLM_PROVIDER not in llm_config.PROVIDERS:
         raise NotConfigured(f"unknown LLM_PROVIDER: {llm_config.LLM_PROVIDER!r}")
 
 
