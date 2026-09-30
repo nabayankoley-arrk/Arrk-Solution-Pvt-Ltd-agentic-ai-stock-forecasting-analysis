@@ -1,7 +1,7 @@
 """combine_sentiment_signals — fan-in node, deterministic.
 
 A recency-weighted vote across whichever of transcript_score /
-annual_report_score actually produced a direction, using
+annual_report_score / news_score actually produced a direction, using
 config.SOURCE_WEIGHTS and a half-life recency decay against each
 document's age -- explicitly not an LLM step (specification: "Combine
 Sentiment Signals is explicitly not an LLM step"). Mirrors
@@ -21,6 +21,7 @@ DIRECTION_SCORE = {"bullish": 1.0, "neutral": 0.0, "bearish": -1.0}
 SOURCES = {
     "transcript": ("transcript_score", "transcript_doc"),
     "annual_report": ("annual_report_score", "annual_report_doc"),
+    "news": ("news_score", "news_doc"),
 }
 
 
@@ -56,8 +57,8 @@ def combine_sentiment_signals(state):
         else:
             direction = "neutral"
 
-    # How much of the full vote was actually available (0-100): one of two
-    # sources, or a stale document, lowers it. Not a model confidence.
+    # How much of the full vote was actually available (0-100): a missing
+    # source, or a stale document, lowers it. Not a model confidence.
     max_weight = sum(SOURCE_WEIGHTS.values())
     coverage = round(available_weight / max_weight * 100, 2) if max_weight else 0.0
 

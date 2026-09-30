@@ -89,6 +89,6 @@ def run_sentiment(state, tool_call_args=None):
         return (
             final_output,
             "unavailable",
-            f"no transcript or annual-report sentiment available (source_status={source_status})",
+            f"no transcript, annual-report or news sentiment available (source_status={source_status})",
         )
     return final_output, "ok", None

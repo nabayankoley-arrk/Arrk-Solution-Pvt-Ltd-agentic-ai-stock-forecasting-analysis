@@ -21,6 +21,30 @@ export interface ChatMessage {
   status?: string; // e.g. "Analysing TCS.NS..." -- shown until the first token arrives
   // A clarification's choices, shown as buttons until one is picked.
   options?: ClarificationOption[];
+  // Recent news the backend found for this turn, listed under the reply.
+  news?: NewsItem[];
+}
+
+// Recent news for one company, searched live by the backend and never stored
+// (backend/main.py's NewsItem). label is the news sentiment; it is null for a
+// company the app does not track.
+export interface NewsArticle {
+  title: string;
+  source?: string | null;
+  published?: string | null; // YYYY-MM-DD
+  url?: string | null;
+  // What the story says: a model summary for the top stories (listed first),
+  // else the start of the article's own text.
+  summary?: string | null;
+}
+
+export interface NewsItem {
+  ticker?: string | null;
+  company?: string | null;
+  label?: "bullish" | "neutral" | "bearish" | null;
+  summary?: string | null;
+  tracked: boolean;
+  articles: NewsArticle[];
 }
 
 // One company the backend asks the user to choose between ("Mahindra" ->
@@ -41,6 +65,7 @@ export interface ChatApiResponse {
   session_id: string;
   ticker?: string | null;
   options?: ClarificationOption[] | null;
+  news?: NewsItem[] | null;
 }
 
 export interface ChatRequestBody {

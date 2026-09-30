@@ -129,6 +129,9 @@ def find_companies(query):
     return Resolution(candidates=candidates)
 
 
+# An NSE or BSE ticker as the tools receive it: "RELIANCE.NS", "M&M.NS", "500325.BO".
+_EXCHANGE_TICKER = re.compile(r"^[A-Za-z0-9&\-]+\.(NS|BO)$", re.IGNORECASE)
+
 # Words that never identify a company on their own.
 _GENERIC_WORDS = {
     "&", "and", "of", "the", "india", "indian", "bank", "company", "group", "industries",
@@ -145,6 +148,10 @@ def users_words(name, message):
     words that is ("mahindra"); when none is -- a ticker for a follow-up, or an
     abbreviation the LLM expanded -- `name` is kept as given.
     """
+    if _EXCHANGE_TICKER.match(str(name or "").strip()):
+        # A ticker ("M&M.NS") is never what the user misspelled: trimming it to
+        # the words they typed turned "M&M.NS" into "m &", which fits no company.
+        return name
     normalised_name, normalised_message = _normalise(name), _normalise(message)
     if not normalised_name or not normalised_message or _words_match(normalised_name, normalised_message):
         return name

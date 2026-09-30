@@ -38,6 +38,30 @@ def _score(profile, doc, source):
     }
 
 
+def build_score(doc, report_type, source):
+    """One LLM call: doc's summary -> its score, marked with `source`, or the
+    error score when the model's reply was unusable. Stores nothing; also used
+    by score_news, whose documents are never stored."""
+    from agents.orchestrator.llm_client import call_llm_chat
+
+    try:
+        profile = build_profile(
+            call_llm_chat, report_type, doc.get("company_name"), doc.get("report_name"),
+            doc.get("filed_on"), doc.get("summary"),
+            article_count=len(doc["articles"]) if doc.get("articles") else None,
+        )
+    except Exception as exc:
+        return {
+            "label": None,
+            "direction": None,
+            "profile": None,
+            "error": f"scoring failed: {exc}",
+            "citation": doc.get("source_url") or doc.get("report_name"),
+            "source": "error",
+        }
+    return _score(profile, doc, source)
+
+
 def score_document(doc, report_type):
     """doc: one row from ._fetch_helpers.fetch_latest_document, or None when
     that source had nothing available (the fetch node already recorded why).
@@ -56,26 +80,14 @@ def score_document(doc, report_type):
     if not RESCORE_ON_CACHE_MISS:
         return None
 
-    from agents.orchestrator.llm_client import call_llm_chat
+    score = build_score(doc, report_type, "scored")
+    if score["source"] == "error":
+        return score
 
-    try:
-        profile = build_profile(
-            call_llm_chat, report_type, doc.get("company_name"), doc.get("report_name"),
-            doc.get("filed_on"), doc.get("summary"),
-        )
-    except Exception as exc:
-        return {
-            "label": None,
-            "direction": None,
-            "profile": None,
-            "error": f"scoring failed: {exc}",
-            "citation": doc.get("source_url") or doc.get("report_name"),
-            "source": "error",
-        }
-
+    profile = score["profile"]
     if doc.get("sha256"):
         try:
             save_document_sentiment(doc["sha256"], profile, prompts.PROMPT_VERSION, _model_label())
         except psycopg2.Error:
             pass  # best-effort cache write; the score below is still returned
-    return _score(profile, doc, "scored")
+    return score

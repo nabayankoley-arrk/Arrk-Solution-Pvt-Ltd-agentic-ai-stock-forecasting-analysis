@@ -22,6 +22,10 @@ class ChatIntentRoutingState(TypedDict, total=False):
     # --- agent / tools (per turn) ---
     tool_rounds: Optional[int]  # rounds of tool calls so far this turn
     analyses: Optional[list]  # [{"ticker", "ok", "response"}, ...] run this turn
+    # Recent news the turn's tools found, one entry per company, returned to the
+    # client as ChatResponse.news: [{"ticker", "company", "label", "summary",
+    # "tracked", "articles": [{"title", "source", "published", "url"}]}, ...]
+    news: Optional[list]
 
     # --- output (per turn) ---
     action: Optional[str]  # 'analysis' | 'reply' | 'error' (chat); 'analyze' (explicit ticker)

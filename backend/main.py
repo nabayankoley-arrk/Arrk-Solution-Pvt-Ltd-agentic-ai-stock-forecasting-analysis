@@ -116,12 +116,33 @@ class ClarificationOption(BaseModel):
     tracked: bool  # False: listed on BSE, but not tracked here, so it cannot be analysed
 
 
+class NewsArticle(BaseModel):
+    title: str
+    source: Optional[str] = None
+    published: Optional[str] = None  # YYYY-MM-DD
+    url: Optional[str] = None
+    summary: Optional[str] = None  # what the story says: a model summary for top stories, else an excerpt
+
+
+class NewsItem(BaseModel):
+    """Recent news one of the turn's tools found for a company, searched live
+    and never stored (agents/sentiment_analysis/nodes/fetch_news.py)."""
+
+    ticker: Optional[str] = None  # None for a company the app does not track
+    company: Optional[str] = None
+    label: Optional[str] = None  # bullish | neutral | bearish; None for an untracked company
+    summary: Optional[str] = None
+    tracked: bool = True
+    articles: List[NewsArticle]
+
+
 class ChatResponse(BaseModel):
     reply: str
     response_type: Literal["analysis", "reply", "clarification", "error"]
     session_id: str
     ticker: Optional[str] = None
     options: Optional[List[ClarificationOption]] = None  # set when response_type is "clarification"
+    news: Optional[List[NewsItem]] = None  # set when the turn found recent news
 
 
 def _pending_question(config):
@@ -153,6 +174,7 @@ def _chat_response(config, session_id):
         response_type=result.get("response_type") or "error",
         session_id=session_id,
         ticker=result.get("resolved_ticker"),
+        news=result.get("news") or None,
     )
 
 

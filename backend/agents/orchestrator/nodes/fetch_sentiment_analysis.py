@@ -1,7 +1,7 @@
 """fetch_sentiment_analysis — baseline analysis node.
 
-Invokes the real agents/sentiment_analysis subgraph (transcript + annual
-report sources -- see that package's own docstring) via
+Invokes the real agents/sentiment_analysis subgraph (transcript, annual
+report and live news sources -- see that package's own docstring) via
 _pillar_runners.run_sentiment, exposing the same (result, pillar_status,
 errors) shape fetch_technical_analysis/fetch_fundamental_analysis already
 use. Kept as a thin wrapper deliberately: this node never changes when

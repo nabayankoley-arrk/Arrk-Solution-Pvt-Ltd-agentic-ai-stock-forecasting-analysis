@@ -77,6 +77,7 @@ export default function Home() {
         responseType: data.response_type,
         ticker: data.ticker,
         options: data.options ?? undefined,
+        news: data.news ?? undefined,
         streaming: false,
         status: undefined,
       }));

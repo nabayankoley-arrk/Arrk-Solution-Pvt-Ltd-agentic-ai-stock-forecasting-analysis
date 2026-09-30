@@ -122,7 +122,9 @@ def _compact(value, max_chars=600):
         kept = {k: _compact(v, max_chars) for k, v in value.items() if k != "error" and v not in (None, "", [], {})}
         return {k: v for k, v in kept.items() if v not in (None, "", [], {})}
     if isinstance(value, list):
-        return [_compact(v, max_chars) for v in value[:10] if not is_internal_detail(v)]
+        # Only strings are dropped whole: a dict (a news article) is compacted
+        # field by field, so its url goes but its title, source and date stay.
+        return [_compact(v, max_chars) for v in value[:10] if not (isinstance(v, str) and is_internal_detail(v))]
     if isinstance(value, str):
         return None if is_internal_detail(value) else value[:max_chars]
     return value

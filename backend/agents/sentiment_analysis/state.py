@@ -1,8 +1,8 @@
 """Shared state object threaded through every node in the graph.
 
-Field set covers only the transcript + annual-report sources this
-package implements -- see __init__.py for what's deliberately left out
-(news) and why.
+Field set covers the three sources this package implements: the stored
+transcript and annual report, and recent news searched at request time
+(see __init__.py).
 """
 
 from typing import Annotated, Optional, TypedDict
@@ -11,7 +11,7 @@ from typing import Annotated, Optional, TypedDict
 def _merge_dicts(current, update):
     """Reducer for pillar_status/errors.
 
-    fetch_transcript and fetch_annual_report run concurrently (see
+    fetch_transcript, fetch_annual_report and fetch_news run concurrently (see
     graph.py) and each contributes only its own source's key. Without an
     explicit reducer, two nodes writing to the same top-level state key in
     one superstep raises LangGraph's InvalidUpdateError -- same reasoning
@@ -35,14 +35,21 @@ class SentimentAnalysisState(TypedDict, total=False):
     transcript_doc: Optional[dict]
     annual_report_doc: Optional[dict]
 
-    pillar_status: Annotated[dict, _merge_dicts]  # {"transcript": "ok"|"unavailable"|"error", "annual_report": ...}
-    errors: Annotated[dict, _merge_dicts]  # {"transcript": "reason" | None, "annual_report": ...}
+    # --- fetch_news ---
+    # Built from a live web search, never stored: {company_name, report_name,
+    # filed_on (newest article's date), summary (the articles as text),
+    # articles: [{title, source, url, published, snippet}], age_days} or None.
+    news_doc: Optional[dict]
 
-    # --- score_transcript / score_annual_report ---
+    pillar_status: Annotated[dict, _merge_dicts]  # {"transcript": "ok"|"unavailable"|"error", "annual_report": ..., "news": ...}
+    errors: Annotated[dict, _merge_dicts]  # {"transcript": "reason" | None, "annual_report": ..., "news": ...}
+
+    # --- score_transcript / score_annual_report / score_news ---
     # Each: {"label", "direction", "profile", "citation", "source": "cached"|"scored"|"error"}
     # (see nodes/_score_helpers.py), or None when the doc was unavailable.
     transcript_score: Optional[dict]
     annual_report_score: Optional[dict]
+    news_score: Optional[dict]  # same shape; source "live" | "memory" | "error"
 
     # --- combine_sentiment_signals ---
     combined_sentiment: Optional[dict]

@@ -28,7 +28,7 @@ from .state import ChatIntentRoutingState
 
 _PER_TURN_FIELDS = (
     "ticker", "horizon", "forecast_days", "thread_id", "message",
-    "tool_rounds", "analyses",
+    "tool_rounds", "analyses", "news",
     "action", "reply", "response_type", "resolved_ticker", "orchestrator_result", "response",
 )
 

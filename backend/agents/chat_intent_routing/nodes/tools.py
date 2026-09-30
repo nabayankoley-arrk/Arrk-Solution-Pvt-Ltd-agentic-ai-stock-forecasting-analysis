@@ -5,8 +5,9 @@
                           forecast_days, also a price range. Returns
                           reply.analysis_digest().
   get_filing_sentiment -- sentiment from the latest annual report and call
-                          transcript only (agents/sentiment_analysis): each
-                          document's profile plus its stored summary.
+                          transcript, plus recent news searched live
+                          (agents/sentiment_analysis): each source's profile
+                          plus the filing's stored summary or the articles.
   screen_stocks        -- every tracked company side by side (screening.py), for
                           general questions such as "which is better for a
                           beginner?". No LLM call.
@@ -23,7 +24,7 @@ run yet, which is why resolution comes first.
 
 A company the database does not track -- listed on BSE but not in `universe`
 ("Tata Steel"), or not found at all -- has no analysis to run, so its tool
-result carries recent web news about it instead (web_search.py), marked as
+result carries recent web news about it instead (agents/web_search.py), marked as
 web information for the agent to present as such.
 
 Tool calls are executed here rather than by LangGraph's ToolNode because each
@@ -48,7 +49,7 @@ from ._company_resolver import find_companies, resolve_answer, users_words
 from ._orchestrator import run_orchestrator
 from ._ticker_lookup import tracked_companies
 from .screening import CRITERIA, screen
-from .web_search import search_company_news
+from agents.web_search import search_company_news
 
 Horizon = Optional[Literal["short_term", "medium_term", "long_term"]]
 
@@ -73,12 +74,14 @@ def analyze_stock(company: str, horizon: Horizon = None, forecast_days: Optional
 
 @tool
 def get_filing_sentiment(company: str) -> str:
-    """Get the sentiment of ONE company from its latest annual report and latest
-    earnings/AGM call transcript: for each document its overall label, management tone,
-    guidance, per-theme stances with supporting points, positives, concerns, notable quotes
-    and the full stored summary. Use this for questions about what management said, their
-    tone or confidence, guidance, risks, strategy, or anything else in the filings. Faster
-    than analyze_stock, which you do not also need for these questions.
+    """Get the sentiment of ONE company from its latest annual report, its latest
+    earnings/AGM call transcript and recent news: for each source its overall label,
+    management tone, guidance, per-theme stances with supporting points, positives,
+    concerns and notable quotes, plus the full stored summary of each filing and the
+    headline, source and date of each news article. Use this for questions about what
+    management said, their tone or confidence, guidance, risks, strategy, anything else in
+    the filings, or the recent news sentiment. Faster than analyze_stock, which you do not
+    also need for these questions.
 
     company: the company exactly as the user named it, or the ticker already under discussion.
     """
@@ -165,6 +168,41 @@ def _web_fallback(error, write_event):
     }
 
 
+_ARTICLE_FIELDS = ("title", "source", "published", "url")
+_EXCERPT_CHARS = 240
+
+
+def _excerpt(text):
+    """The start of an article's text, cut at a word boundary."""
+    text = (text or "").strip()
+    return text if len(text) <= _EXCERPT_CHARS else text[:_EXCERPT_CHARS].rsplit(" ", 1)[0] + "..."
+
+
+def _news_item(ticker, company, articles, label=None, summary=None, tracked=True):
+    """One company's recent news for ChatResponse.news, or None when there is none.
+    Each article carries what it says: the news profile's summary of the story
+    when it is one of the top stories, else the start of the article's text."""
+    articles = [
+        {**{k: a.get(k) for k in _ARTICLE_FIELDS}, "summary": a.get("summary") or _excerpt(a.get("snippet")) or None}
+        for a in articles or [] if a.get("title")
+    ]
+    if not articles:
+        return None
+    return {
+        "ticker": ticker, "company": company, "label": label, "summary": summary,
+        "tracked": tracked, "articles": articles,
+    }
+
+
+def _sentiment_news(ticker, sentiment):
+    """The news item from a sentiment pillar result (its "news" source)."""
+    source = ((sentiment or {}).get("sources") or {}).get("news") or {}
+    if source.get("status") != "ok":
+        return None
+    articles = [{**a, "snippet": a.get("excerpt")} for a in source.get("articles") or []]
+    return _news_item(ticker, None, articles, source.get("label"), source.get("rationale"))
+
+
 def _analyze(ticker, args, write_event):
     """-> (tool result for the model, analysis record)."""
     forecast_days = args.get("forecast_days")
@@ -192,23 +230,32 @@ def _sentiment_graph():
 
 
 def _filing_sentiment(ticker, write_event):
-    """The sentiment pillar's result for one ticker, with each source's stored summary."""
-    write_event({"type": "status", "ticker": ticker, "message": f"Reading the filings for {ticker}..."})
+    """-> (tool result, news item or None): the sentiment pillar's result for one
+    ticker, with each filing's stored summary and the news articles."""
+    write_event({"type": "status", "ticker": ticker, "message": f"Reading the filings and recent news for {ticker}..."})
     try:
         state = _sentiment_graph().invoke({"ticker": ticker})
     except Exception as exc:
         print(f"[chat] sentiment graph failed for {ticker}: {type(exc).__name__}: {exc}", flush=True)
-        return {"ticker": ticker, "error": "the filing sentiment could not be read right now"}
+        return {"ticker": ticker, "error": "the filing sentiment could not be read right now"}, None
 
     output = state.get("final_output") or {}
     if output.get("error"):
-        return {"ticker": ticker, "error": "the filing sentiment could not be read right now"}
+        return {"ticker": ticker, "error": "the filing sentiment could not be read right now"}, None
     sources = {}
-    for source, doc_key in (("transcript", "transcript_doc"), ("annual_report", "annual_report_doc")):
+    for source, doc_key in (("transcript", "transcript_doc"), ("annual_report", "annual_report_doc"), ("news", "news_doc")):
         entry = dict((output.get("sources") or {}).get(source) or {})
         entry.pop("error", None)  # internal detail; status says it was unusable
         doc = state.get(doc_key) or {}
-        if doc.get("summary"):
+        if doc.get("articles"):
+            # Top stories first, each with its summary, plus every article's own
+            # text: the articles are this source's "document summary".
+            snippets = {a.get("url"): a.get("snippet") for a in doc["articles"]}
+            entry["articles"] = [
+                {**{k: a.get(k) for k in ("title", "source", "published", "summary")}, "text": snippets.get(a.get("url"))}
+                for a in entry.get("articles") or []
+            ]
+        elif doc.get("summary"):
             entry["document_summary"] = doc["summary"]
         sources[source] = entry
     return {
@@ -216,7 +263,7 @@ def _filing_sentiment(ticker, write_event):
         "direction": output.get("direction"),
         "summary": output.get("summary"),
         "sources": sources,
-    }
+    }, _sentiment_news(ticker, output)
 
 
 def tools(state):
@@ -236,6 +283,12 @@ def tools(state):
 
     # 2. Then run the calls.
     messages, analyses, current_ticker = [], list(state.get("analyses") or []), state.get("current_ticker")
+    news = {item["ticker"] or item["company"]: item for item in state.get("news") or []}
+
+    def add_news(item):
+        if item:
+            news[item["ticker"] or item["company"]] = item
+
     for call in calls:
         args = call.get("args") or {}
         if call["name"] == "screen_stocks":
@@ -246,14 +299,17 @@ def tools(state):
             ticker, error, clarification = resolved[call["id"]]
             if error and error.get("untracked_company"):
                 result = _web_fallback(dict(error), write_event)
+                add_news(_news_item(None, result["company"], result.get("web_results"), tracked=False))
             elif error:
                 result = error
             elif call["name"] == "analyze_stock":
                 result, record = _analyze(ticker, args, write_event)
                 analyses.append(record)
+                add_news(_sentiment_news(ticker, (record.get("response") or {}).get("sentiment_summary")))
                 current_ticker = ticker
             else:
-                result = _filing_sentiment(ticker, write_event)
+                result, news_item = _filing_sentiment(ticker, write_event)
+                add_news(news_item)
                 current_ticker = ticker
         else:
             result = {"error": f"unknown tool {call['name']!r}"}
@@ -264,6 +320,7 @@ def tools(state):
     return {
         "messages": messages,
         "analyses": analyses,
+        "news": list(news.values()),
         "current_ticker": current_ticker,
         "tool_rounds": (state.get("tool_rounds") or 0) + 1,
     }
